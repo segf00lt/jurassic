@@ -509,10 +509,11 @@ struct Entity {
   Entity_collide_proc collide_proc;
 
   // TODO sprite offset
-  Sprite sprite;
-  f32    sprite_scale;
-  f32    sprite_rotation;
-  Color  sprite_tint;
+  Sprite  sprite;
+  f32     sprite_scale;
+  f32     sprite_rotation;
+  Color   sprite_tint;
+  Vector2 sprite_offset;
 
   Color  effect_tint;
   f32    effect_tint_timer_vel;
@@ -697,7 +698,7 @@ const Vector2 DEBUG_PLAYER_INITIAL_POS = { 500 , 500 };
 const float PLAYER_FRICTION = 40.0f;
 const Vector2 PLAYER_LOOK_DIR = { 0, -1 };
 const s32 PLAYER_HEALTH = 10;
-const float PLAYER_BOUNDS_RADIUS = 25;
+const float PLAYER_BOUNDS_RADIUS = 10;
 const float PLAYER_SPRITE_Y_OFFSET = 14;
 const float PLAYER_SPRITE_SCALE = 1.0f;
 const float PLAYER_ACCEL = 1.6e4;
@@ -1755,7 +1756,7 @@ b32 sprite_equals(Sprite a, Sprite b) {
 
 void draw_sprite(Game *gp, Entity *ep) {
   Sprite sp = ep->sprite;
-  Vector2 pos = ep->pos;
+  Vector2 pos = Vector2Add(ep->pos, ep->sprite_offset);
   f32 scale = ep->sprite_scale;
   f32 rotation = ep->sprite_rotation;
   Color tint = ep->sprite_tint;
@@ -1784,8 +1785,11 @@ void draw_sprite(Game *gp, Entity *ep) {
 
   Rectangle dest_rec =
   {
-    .x = (pos.x - scale*0.5f*source_rec.width),
-    .y = (pos.y - scale*0.5f*source_rec.height),
+    //.x = (pos.x - scale*0.5f*source_rec.width),
+    //.y = (pos.y - scale*0.5f*source_rec.height),
+    // because of rotation or origin idk??
+    .x = pos.x,
+    .y = pos.y,
     .width = scale*source_rec.width,
     .height = scale*source_rec.height,
   };
@@ -1801,6 +1805,7 @@ void draw_sprite(Game *gp, Entity *ep) {
   Vector2 origin =
   { dest_rec.width*0.5f, dest_rec.height*0.5f };
 
+  //DrawRectanglePro(dest_rec, origin, rotation, SKYBLUE);
   DrawTexturePro(gp->sprite_atlas, source_rec, dest_rec, origin, rotation, tint);
 }
 
@@ -2345,8 +2350,9 @@ void game_update_and_draw(Game *gp) {
 
                 if(gp->input_flags & INPUT_FLAG_SHOOT) {
 
-                  camera_shake(gp, 0.1f, 1.0f);
-                  camera_pulsate(gp, 0.18f, 0.16f);
+                  camera_shake(gp, 0.15, 1.8f);
+                  //camera_shake(gp, 0.1f, 1.0f);
+                  //camera_pulsate(gp, 0.18f, 0.16f);
 
                   if(!(gp->flags & GAME_FLAG_PLAYER_CANNOT_SHOOT)) {
                     ep->gun.shoot = 1;
