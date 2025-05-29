@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+/* Make html/body fill iframe and remove scrollbars */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000; /* optional: background behind your canvas */
+}
+    /* Canvas should fill the iframe */
+    #canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    </style>
+    <script type='text/javascript' src="https://cdn.jsdelivr.net/gh/eligrey/FileSaver.js/dist/FileSaver.min.js"> </script>
+    <script type='text/javascript'>
+      function saveFileFromMEMFSToDisk(memoryFSname, localFSname)     // This can be called by C/C++ code
+      {
+        var isSafari = false; // Not supported, navigator.userAgent access is being restricted
+        //var isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+        var data = FS.readFile(memoryFSname);
+        var blob;
+
+        if (isSafari) blob = new Blob([data.buffer], { type: "application/octet-stream" });
+        else blob = new Blob([data.buffer], { type: "application/octet-binary" });
+
+        // NOTE: SaveAsDialog is a browser setting. For example, in Google Chrome,
+        // in Settings/Advanced/Downloads section you have a setting:
+        // 'Ask where to save each file before downloading' - which you can set true/false.
+        // If you enable this setting it would always ask you and bring the SaveAsDialog
+        saveAs(blob, localFSname);
+      }
+    </script>
+  </head>
+  <body>
+    <!-- This is the canvas Emscripten will render into -->
+    <canvas id="canvas"></canvas>
+
+    <script>
+      // Prepare Module so we can hook into runtime initialization
+      var Module = {
+        canvas: document.getElementById('canvas'),
+        onRuntimeInitialized: function() {
+          // Initial resize once the WASM is ready
+          resizeCanvas();
+        }
+      };
+
+      // Resize both CSS display size and actual buffer size
+      function resizeCanvas() {
+        var c = Module.canvas;
+        // CSS pixels
+        var displayWidth  = c.clientWidth;
+        var displayHeight = c.clientHeight;
+        // Only update if size has changed
+        if (c.width !== displayWidth || c.height !== displayHeight) {
+          // Set the internal buffer resolution to match display size
+          c.width  = displayWidth;
+          c.height = displayHeight;
+        }
+      }
+
+      // Listen for window resizes (including iframe size changes)
+      window.addEventListener('resize', resizeCanvas);
+    </script>
+    {{{ SCRIPT }}}
+  </body>
+</html>
