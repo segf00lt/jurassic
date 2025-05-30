@@ -77,7 +77,9 @@
   X(MOVE_LEFT)              \
   X(MOVE_RIGHT)             \
   X(SHOOT)                  \
-  X(STOP_SHOOTING)          \
+  X(SHOOT_HOLD)             \
+  X(INTERACT)               \
+  X(THROW)                  \
   X(PAUSE)                  \
 
 #define ENTITY_KINDS           \
@@ -107,6 +109,8 @@
   X(ON_SCREEN)                       \
   X(DIE_IF_CHILD_LIST_EMPTY)         \
   X(DIE_NOW)                         \
+  X(INTERACT)                        \
+  X(IS_INTERACTABLE)                 \
   X(HAS_LIFETIME)                    \
   X(APPLY_COLLISION)                 \
   X(RECEIVE_COLLISION)               \
@@ -189,6 +193,8 @@ typedef struct Waypoint Waypoint;
 typedef struct Waypoint_list Waypoint_list;
 typedef void (*Waypoint_action_proc)(Game *gp, Entity *this_entity);
 typedef void (*Entity_collide_proc)(Game *gp, Entity *this_entity, Entity *other_entity);
+typedef void (*Entity_interact_proc)(Game *gp, Entity *this_entity, Entity *other_entity);
+typedef void (*Entity_drop_proc)(Game *gp, Entity *this_entity, Entity *other_entity);
 
 typedef enum Game_state {
 #define X(state) GAME_STATE_##state,
@@ -421,9 +427,9 @@ struct Gun {
   s32 burst_shots;
   s32 burst_shots_fired;
 
-  s32 shots;
   f32 cooldown_duration;
   f32 cooldown_timer;
+  b32 cooling_down;
 
   b16 cocked;
   s16 shoot;
@@ -499,6 +505,7 @@ struct Entity {
   Vector2 vel;
   Vector2 pos;
   f32     radius;
+  f32     interact_radius;
   f32     scalar_vel;
   f32     friction;
   f32     look_angle;
@@ -529,6 +536,8 @@ struct Entity {
 
   Entity_kind_mask apply_collision_mask;
   Entity_collide_proc collide_proc;
+  Entity_interact_proc interact_proc;
+  Entity_drop_proc drop_proc;
 
   // TODO sprite offset
   Sprite  sprite;
@@ -694,10 +703,15 @@ b32 is_valid_handle(Entity_handle handle);
 Entity* spawn_player(Game *gp);
 Entity* spawn_health_pack(Game *gp);
 Entity* spawn_shotgun(Game *gp);
+Entity* spawn_assault_rifle(Game *gp);
 Entity* spawn_parent(Game *gp);
 
-void pick_up_health_pack(Game *gp, Entity *a, Entity *b);
-void pick_up_shotgun(Game *gp, Entity *a, Entity *b);
+void pickup_health_pack(Game *gp, Entity *a, Entity *b);
+
+void pickup_shotgun(Game *gp, Entity *a, Entity *b);
+void pickup_assault_rifle(Game *gp, Entity *a, Entity *b);
+
+void drop_weapon(Game *gp, Entity *weapon, Entity *wielder);
 
 b32 check_circle_all_inside_rec(Vector2 center, float radius, Rectangle rec);
 
@@ -732,6 +746,9 @@ const Color PLAYER_BOUNDS_COLOR = { 255, 0, 0, 255 };
 const float PLAYER_LOOK_RADIUS = 200.0f;
 
 const float PICKUP_BOUNDS_RADIUS = 50.0f;
+
+const float INTERACT_RADIUS = 20;
+const float WEAPON_RADIUS = 14;
 
 const Entity_flags DEFAULT_BULLET_FLAGS =
 ENTITY_FLAG_APPLY_COLLISION |
@@ -1075,6 +1092,45 @@ Entity* spawn_shotgun(Game *gp) {
   ep->flags =
     ENTITY_FLAG_HAS_GUN |
     ENTITY_FLAG_APPLY_COLLISION |
+    ENTITY_FLAG_IS_INTERACTABLE |
+    ENTITY_FLAG_HAS_SPRITE |
+    0;
+
+  ep->update_order = ENTITY_ORDER_LAST;
+  ep->draw_order = ENTITY_ORDER_FIRST;
+
+  // nocheckin
+  ep->pos = (Vector2){ .x = 100, . y = 900 }; 
+
+  ep->apply_collision_mask =
+    ENTITY_KIND_MASK_PLAYER |
+    0;
+
+  ep->interact_proc = pickup_shotgun;
+  ep->drop_proc     = drop_weapon;
+
+  ep->gun.kind = GUN_KIND_SHOTGUN;
+
+  ep->bounds_color = GREEN;
+  ep->sprite = SPRITE_SHOTGUN_SIDE;
+  ep->sprite_scale = 1.0f;
+  ep->sprite_tint = WHITE;
+
+  ep->interact_radius = INTERACT_RADIUS;
+  ep->radius = WEAPON_RADIUS;
+
+  return ep;
+}
+
+Entity* spawn_assault_rifle(Game *gp) {
+  Entity *ep = entity_spawn(gp);
+
+  ep->kind = ENTITY_KIND_ASSAULT_RIFLE;
+
+  ep->flags =
+    ENTITY_FLAG_HAS_GUN |
+    ENTITY_FLAG_APPLY_COLLISION |
+    ENTITY_FLAG_IS_INTERACTABLE |
     ENTITY_FLAG_HAS_SPRITE |
     0;
 
@@ -1088,16 +1144,18 @@ Entity* spawn_shotgun(Game *gp) {
     ENTITY_KIND_MASK_PLAYER |
     0;
 
-  ep->collide_proc = pick_up_shotgun;
+  ep->interact_proc = pickup_assault_rifle;
+  ep->drop_proc     = drop_weapon;
 
-  ep->gun.kind = GUN_KIND_SHOTGUN;
+  ep->gun.kind = GUN_KIND_ASSAULT_RIFLE;
 
   ep->bounds_color = GREEN;
-  ep->sprite = SPRITE_SHOTGUN_SIDE;
+  ep->sprite = SPRITE_ASSAULT_RIFLE_SIDE;
   ep->sprite_scale = 1.0f;
   ep->sprite_tint = WHITE;
 
-  ep->radius = 10;
+  ep->interact_radius = INTERACT_RADIUS;
+  ep->radius = WEAPON_RADIUS;
 
   return ep;
 }
@@ -1124,7 +1182,7 @@ Entity* spawn_health_pack(Game *gp) {
   ep->vel = (Vector2){ .y = (float)GetRandomValue(780, 800), };
   ep->friction = 0.45f;
 
-  ep->collide_proc = pick_up_health_pack;
+  ep->collide_proc = pickup_health_pack;
 
   ep->death_particle_emitter = PARTICLE_EMITTER_GREEN_PUFF;
 
@@ -1142,14 +1200,56 @@ Entity* spawn_health_pack(Game *gp) {
   return ep;
 }
 
-void pick_up_shotgun(Game *gp, Entity *a, Entity *b) {
+void pickup_assault_rifle(Game *gp, Entity *a, Entity *b) {
+  ASSERT(a->kind == ENTITY_KIND_ASSAULT_RIFLE);
+  ASSERT(b->kind == ENTITY_KIND_PLAYER);
+
+  Entity *rifle = a;
+  Entity *player = b;
+
+  {
+    Entity *holding = entity_from_handle(player->child_handle);
+
+    if(holding) {
+      holding->drop_proc(gp, holding, player);
+    }
+
+  }
+
+  rifle->flags ^=
+    ENTITY_FLAG_IS_INTERACTABLE |
+    ENTITY_FLAG_MANUAL_SPRITE_ORIGIN |
+    0;
+
+  rifle->parent_handle = handle_from_entity(player);
+  player->holding_gun_handle = handle_from_entity(rifle);
+
+  rifle->sprite = SPRITE_ASSAULT_RIFLE_TOP;
+  ///rifle->sprite_offset = (Vector2){ .x = -0.5, };
+  rifle->control = ENTITY_CONTROL_GUN_BEING_HELD;
+  rifle->being_held_offset = (Vector2){ .x = -6, .y = 12 };
+
+}
+
+void pickup_shotgun(Game *gp, Entity *a, Entity *b) {
+
   ASSERT(a->kind == ENTITY_KIND_SHOTGUN);
   ASSERT(b->kind == ENTITY_KIND_PLAYER);
 
   Entity *shotgun = a;
   Entity *player = b;
 
-  shotgun->flags |=
+  {
+    Entity *holding = entity_from_handle(player->child_handle);
+
+    if(holding) {
+      holding->drop_proc(gp, holding, player);
+    }
+
+  }
+
+  shotgun->flags ^=
+    ENTITY_FLAG_IS_INTERACTABLE |
     ENTITY_FLAG_MANUAL_SPRITE_ORIGIN |
     0;
 
@@ -1162,7 +1262,20 @@ void pick_up_shotgun(Game *gp, Entity *a, Entity *b) {
 
 }
 
-void pick_up_health_pack(Game *gp, Entity *a, Entity *b) {
+void drop_weapon(Game *gp, Entity *weapon, Entity *wielder) {
+
+  weapon->flags |=
+    ENTITY_FLAG_IS_INTERACTABLE |
+    0;
+
+  weapon->parent_handle = (Entity_handle){0};
+  wielder->child_handle = (Entity_handle){0};
+
+  weapon->control = ENTITY_CONTROL_NONE;
+
+}
+
+void pickup_health_pack(Game *gp, Entity *a, Entity *b) {
   ASSERT(a->kind == ENTITY_KIND_HEALTH_PACK);
   ASSERT(b->kind == ENTITY_KIND_PLAYER);
 
@@ -1513,18 +1626,17 @@ void entity_shoot_gun(Game *gp, Entity *ep) {
         {
           gun->bullet_kind = ENTITY_KIND_PLAYER_BULLET;
           gun->bullet_collision_mask = PLAYER_BULLET_APPLY_COLLISION_MASK;
-          gun->cooldown_timer = 0.0f;
-          gun->cooldown_duration = 0.3f;
-          gun->shots = 1;
+          gun->cooling_down = 0;
+          gun->cooldown_duration = 1.0f;
 
           // TODO sound effects
           //gun->sound = kjsdhas;
           gun->radius = ep->radius + 5.0f;
-          gun->n_arms = 3;
+          gun->n_arms = 6;
           gun->arms_occupy_circle_sector_percent = 0.02f;
           gun->n_bullets = 1;
           gun->bullet_arm_width = 0.0f;
-          gun->bullet_radius = 15;
+          gun->bullet_radius = 3;
           gun->bullet_vel = 1000;
           gun->bullet_friction = 0.1f;
           gun->bullet_damage = 10;
@@ -1546,7 +1658,43 @@ void entity_shoot_gun(Game *gp, Entity *ep) {
         } break;
       case GUN_KIND_ASSAULT_RIFLE:
         {
-          UNIMPLEMENTED;
+
+          gun->bullet_kind = ENTITY_KIND_PLAYER_BULLET;
+
+          gun->flags |=
+            GUN_FLAG_AUTOMATIC |
+            0;
+
+          gun->bullet_collision_mask = PLAYER_BULLET_APPLY_COLLISION_MASK;
+          gun->cooling_down = 0;
+          gun->cooldown_duration = 0.03f;
+
+          // TODO sound effects
+          //gun->sound = kjsdhas;
+          gun->radius = ep->radius + 5.0f;
+          gun->n_arms = 1;
+          gun->arms_occupy_circle_sector_percent = 0.00f;
+          gun->n_bullets = 1;
+          gun->bullet_arm_width = 0.0f;
+          gun->bullet_radius = 2;
+          gun->bullet_vel = 1200;
+          gun->bullet_friction = 0.0f;
+          gun->bullet_damage = 5;
+          gun->bullet_bounds_color = GREEN;
+          gun->bullet_sprite = SPRITE_RIFLE_ROUND;
+          gun->bullet_sprite_tint = WHITE;
+          gun->bullet_sprite_scale = 1.0f;
+          gun->bullet_flags =
+            ENTITY_FLAG_HAS_SPRITE |
+            ENTITY_FLAG_EMIT_DEATH_PARTICLES |
+            ENTITY_FLAG_APPLY_FRICTION |
+            0;
+          gun->cam_shake_duration = 0.10f;
+          gun->cam_shake_magnitude = 1.0f;
+
+          // nocheckin tiny sparks
+          gun->bullet_death_particle_emitter = PARTICLE_EMITTER_SPARKS;
+
         } break;
       case GUN_KIND_GRENADE_LAUNCHER:
         {
@@ -1562,58 +1710,51 @@ void entity_shoot_gun(Game *gp, Entity *ep) {
 
   //ASSERT(gun->bullet_kind != ENTITY_KIND_INVALID);
 
-  if(gun->shots <= 0) {
-    if(gun->flags & GUN_FLAG_AUTOMATIC) {
-      gun->shots = 1;
-    } else {
-      gun->shoot = 0;
-      gun->cocked = 0;
-    }
-  }
-
   if(gun->shoot) {
 
-    if(gun->flags & GUN_FLAG_BURST) {
+    if(gun->cooling_down) {
+      if(gun->flags & GUN_FLAG_BURST) {
 
-      if(gun->burst_shots_fired >= gun->burst_shots) {
+        if(gun->burst_shots_fired >= gun->burst_shots) {
 
-        if(gun->cooldown_timer <= 0.0f) {
-          gun->cooldown_timer = gun->cooldown_duration;
+          if(gun->cooldown_timer >= gun->cooldown_duration) {
+            gun->cooling_down = 0;
+            gun->shoot = 0;
+            gun->burst_timer = 0.0f;
+            gun->burst_shots_fired = 0;
 
-          gun->shots--;
-          gun->burst_timer = 0.0f;
-          gun->burst_shots_fired = 0;
+          } else {
+            gun->cooldown_timer += gp->dt;
+          }
 
         } else {
-          gun->cooldown_timer -= gp->dt;
-        }
 
-        goto shoot_end;
+          if(gun->burst_timer >= gun->burst_cooldown) {
+            gun->cooling_down = 0;
+            gun->burst_timer = 0;
+            gun->burst_shots_fired++;
+          } else {
+            gun->burst_timer += gp->dt;
+          }
+
+        }
 
       } else {
 
-        if(gun->burst_timer <= 0.0f) {
-          gun->cooldown_timer = gun->cooldown_duration;
-          gun->burst_timer = gun->burst_cooldown;
-          gun->burst_shots_fired++;
+        if(gun->cooldown_timer >= gun->cooldown_duration) {
+          gun->cooling_down = 0;
+          gun->shoot = 0;
         } else {
-          gun->burst_timer -= gp->dt;
-          goto shoot_end;
+          gun->cooldown_timer += gp->dt;
         }
 
       }
+
+      goto shoot_end;
 
     } else {
-
-      if(gun->cooldown_timer <= 0.0f) {
-        gun->cooldown_timer = gun->cooldown_duration;
-        gun->shots--;
-      } else {
-        gun->cooldown_timer -= gp->dt;
-
-        goto shoot_end;
-      }
-
+      gun->cooling_down = 1;
+      gun->cooldown_timer = 0;
     }
 
     ASSERT(gun->n_arms > 0);
@@ -1700,7 +1841,7 @@ void entity_shoot_gun(Game *gp, Entity *ep) {
         bullet->fill_color = gun->bullet_fill_color;
 
         bullet->sprite = gun->bullet_sprite;
-        bullet->sprite_rotation = gun->bullet_sprite_rotation;
+        bullet->sprite_rotation = ep->look_angle * RAD2DEG;
         bullet->sprite_scale = gun->bullet_sprite_scale;
         bullet->sprite_tint = gun->bullet_sprite_tint;
 
@@ -2018,6 +2159,27 @@ void game_level_end(Game *gp) {
 }
 
 void game_main_loop(Game *gp) {
+  /*
+   * NOTE gameplay ideas
+   *
+   * Time limit to clear the level, postvoid style.
+   *
+   * The theme is "unpredictable"
+   *
+   * Weapons you pick up could be jammed, forcing you to throw them at your enemy
+   *
+   * Parts of the map with supplies could randomly become inaccessable on a given run
+   *
+   * The core idea is that the same strategy will not work every run, and you won' know
+   * that ahead of time, so the meta level of the game is learning to adapt quickly when
+   * what you tried doesn't work. Like in martial arts.
+   *
+   * It is never unpredictable to the point of being cheap, but enough to force you to think fast
+   *
+   * There is a chance that your weapon will fire itself when you throw it. This will deal reduced damage if it hits you.
+   * How should we telegraph it though??
+   *
+   */
   UNIMPLEMENTED;
 }
 
@@ -2071,12 +2233,21 @@ void game_update_and_draw(Game *gp) {
       gp->input_flags |= INPUT_FLAG_MOVE_RIGHT;
     }
 
+    if(IsKeyPressed(KEY_E)) {
+      gp->input_flags |= INPUT_FLAG_INTERACT;
+    }
+
+    // TODO throwing weapons
+    if(IsKeyPressed(KEY_F)) {
+      gp->input_flags |= INPUT_FLAG_THROW;
+    }
+
     if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
       gp->input_flags |= INPUT_FLAG_SHOOT;
     }
 
-    if(IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-      gp->input_flags |= INPUT_FLAG_STOP_SHOOTING;
+    if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+      gp->input_flags |= INPUT_FLAG_SHOOT_HOLD;
     }
 
     if(IsKeyPressed(KEY_ESCAPE)) {
@@ -2314,6 +2485,7 @@ void game_update_and_draw(Game *gp) {
               0;
 
             spawn_shotgun(gp);
+            spawn_assault_rifle(gp);
 
           } else {
 
@@ -2427,23 +2599,36 @@ void game_update_and_draw(Game *gp) {
                   }
                 }
 
-                if(gp->input_flags & INPUT_FLAG_SHOOT) {
+                Entity *gun = entity_from_handle(ep->holding_gun_handle);
+                if(gun) {
 
-                  //camera_shake(gp, 0.15, 1.8f);
-                  //camera_shake(gp, 0.1f, 1.0f);
-                  //camera_pulsate(gp, 0.18f, 0.16f);
+                  if(gun->gun.flags & GUN_FLAG_AUTOMATIC) {
+                    if(gp->input_flags & INPUT_FLAG_SHOOT_HOLD) {
+                      gun->gun.shoot = 1;
+                    }
+                  } else {
+                    if(gp->input_flags & INPUT_FLAG_SHOOT) {
 
-                  Entity *gun = entity_from_handle(ep->holding_gun_handle);
-                  if(gun) {
-                    gun->gun.shoot = 1;
-                  }
+                      gun->gun.shoot = 1;
 
-                  //if(!(gp->flags & GAME_FLAG_PLAYER_CANNOT_SHOOT)) {
-                  //  Entity *gun = entity_from_handle(ep->holding_gun_handle);
-                  //  if(gun) {
-                  //    gun->gun.shoot = 1;
-                  //  }
-                  //}
+                      //camera_shake(gp, 0.15, 1.8f);
+                      //camera_shake(gp, 0.1f, 1.0f);
+                      //camera_pulsate(gp, 0.18f, 0.16f);
+
+                      //if(!(gp->flags & GAME_FLAG_PLAYER_CANNOT_SHOOT)) {
+                      //  Entity *gun = entity_from_handle(ep->holding_gun_handle);
+                      //  if(gun) {
+                      //    gun->gun.shoot = 1;
+                      //  }
+                      //}
+                    }
+                  } 
+
+                }
+
+                if(gp->input_flags & INPUT_FLAG_INTERACT) {
+
+                  ep->flags |= ENTITY_FLAG_INTERACT;
                 }
 
                 if(gp->debug_flags & GAME_DEBUG_FLAG_PLAYER_INVINCIBLE) {
@@ -2455,7 +2640,6 @@ void game_update_and_draw(Game *gp) {
             case ENTITY_CONTROL_GUN_BEING_HELD:
               {
                 Entity *parent = entity_from_handle(ep->parent_handle);
-                ASSERT(parent);
 
                 ep->look_dir = parent->look_dir;
                 ep->look_angle = parent->look_angle;
@@ -2528,6 +2712,30 @@ void game_update_and_draw(Game *gp) {
             if(gp->state != GAME_STATE_GAME_OVER) {
               entity_shoot_gun(gp, ep);
             }
+          }
+
+          if(ep->flags & ENTITY_FLAG_INTERACT) {
+
+            ep->flags &= ~ENTITY_FLAG_INTERACT;
+
+            for(int i = 0; i < gp->entities_allocated; i++) {
+              Entity *interacting = &gp->entities[i];
+
+              if(ep != interacting && interacting->live) {
+
+                if(interacting->flags & ENTITY_FLAG_IS_INTERACTABLE) {
+                  if(entity_check_collision(gp, ep, interacting)) {
+
+                    interacting->interact_proc(gp, interacting, ep);
+                    break;
+
+                  }
+                }
+
+              }
+
+            }
+
           }
 
           if(ep->flags & ENTITY_FLAG_APPLY_COLLISION) {
