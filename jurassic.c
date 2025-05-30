@@ -31,7 +31,7 @@
 #define MAX_ENTITIES 4096
 #define MAX_PARTICLES 8192
 #define MAX_BULLETS_IN_BAG 8
-#define MAX_LEADERS 32
+#define MAX_PARENTS 32
 #define MAX_ENTITY_LISTS 16
 
 #define BLOOD ((Color){ 255, 0, 0, 255 })
@@ -82,10 +82,14 @@
 
 #define ENTITY_KINDS           \
   X(PLAYER)                    \
-  X(LEADER)                    \
+  X(PARENT)                    \
   X(PLAYER_BULLET)             \
   X(RAPTOR)                    \
   X(HEALTH_PACK)               \
+  X(SHOTGUN)                   \
+  X(ASSAULT_RIFLE)             \
+  X(GRENADE_LAUNCHER)          \
+  X(FLAMETHROWER)              \
   X(BOSS)                      \
 
 #define ENTITY_ORDERS   \
@@ -95,9 +99,10 @@
 #define ENTITY_FLAGS                 \
   X(DYNAMICS)                        \
   X(HAS_SPRITE)                      \
+  X(MANUAL_SPRITE_ORIGIN)            \
   X(APPLY_FRICTION)                  \
   X(FILL_BOUNDS)                     \
-  X(HAS_GUN)              \
+  X(HAS_GUN)                         \
   X(NOT_ON_SCREEN)                   \
   X(ON_SCREEN)                       \
   X(DIE_IF_CHILD_LIST_EMPTY)         \
@@ -117,9 +122,10 @@
 
 #define ENTITY_CONTROLS               \
   X(PLAYER)                           \
-  X(FOLLOW_LEADER)                    \
-  X(FOLLOW_LEADER_CHAIN)              \
-  X(COPY_LEADER)                      \
+  X(FOLLOW_PARENT)                    \
+  X(GUN_BEING_HELD)                   \
+  X(FOLLOW_PARENT_CHAIN)              \
+  X(COPY_PARENT)                      \
   X(GOTO_WAYPOINT)                    \
 
 #define PARTICLE_EMITTERS        \
@@ -137,6 +143,10 @@
 #define PARTICLE_FLAGS            \
 
 #define GUN_KINDS                   \
+  X(SHOTGUN)                        \
+  X(ASSAULT_RIFLE)                  \
+  X(GRENADE_LAUNCHER)               \
+  X(FLAMETHROWER)                   \
 
 #define GUN_FLAGS                   \
   X(MANUALLY_SET_DIR)               \
@@ -375,9 +385,13 @@ struct Gun {
 
   f32 radius;
 
+  s32 n_arms;
   f32 arms_occupy_circle_sector_percent;
 
   Vector2 bullet_point_bag[MAX_BULLETS_IN_BAG];
+
+  f32 cam_shake_magnitude;
+  f32 cam_shake_duration;
 
   s32          n_bullets;
   f32          bullet_arm_width;
@@ -469,7 +483,12 @@ struct Entity {
   u64 uid;
   u64 tag;
 
-  Entity_handle leader_handle;
+  Entity_handle parent_handle;
+
+  union {
+    Entity_handle child_handle;
+    Entity_handle holding_gun_handle;
+  };
 
   Entity_list *child_list;
   Entity_list *parent_list;
@@ -482,6 +501,7 @@ struct Entity {
   f32     radius;
   f32     scalar_vel;
   f32     friction;
+  f32     look_angle;
 
   f32 shooting_pause_timer;
   f32 start_shooting_delay;
@@ -505,6 +525,8 @@ struct Entity {
 
   Gun gun;
 
+  Vector2 being_held_offset;
+
   Entity_kind_mask apply_collision_mask;
   Entity_collide_proc collide_proc;
 
@@ -514,6 +536,7 @@ struct Entity {
   f32     sprite_rotation;
   Color   sprite_tint;
   Vector2 sprite_offset;
+  Vector2 manual_sprite_origin;
 
   Color  effect_tint;
   f32    effect_tint_timer_vel;
@@ -670,9 +693,11 @@ b32 is_valid_handle(Entity_handle handle);
 
 Entity* spawn_player(Game *gp);
 Entity* spawn_health_pack(Game *gp);
-Entity* spawn_leader(Game *gp);
+Entity* spawn_shotgun(Game *gp);
+Entity* spawn_parent(Game *gp);
 
-void collide_with_health_pack(Game *gp, Entity *a, Entity *b);
+void pick_up_health_pack(Game *gp, Entity *a, Entity *b);
+void pick_up_shotgun(Game *gp, Entity *a, Entity *b);
 
 b32 check_circle_all_inside_rec(Vector2 center, float radius, Rectangle rec);
 
@@ -701,7 +726,7 @@ const s32 PLAYER_HEALTH = 10;
 const float PLAYER_BOUNDS_RADIUS = 10;
 const float PLAYER_SPRITE_Y_OFFSET = 14;
 const float PLAYER_SPRITE_SCALE = 1.0f;
-const float PLAYER_ACCEL = 1.6e4;
+const float PLAYER_ACCEL = 1.2e4;
 const float PLAYER_SLOW_FACTOR = 0.5f;
 const Color PLAYER_BOUNDS_COLOR = { 255, 0, 0, 255 };
 const float PLAYER_LOOK_RADIUS = 200.0f;
@@ -715,10 +740,15 @@ ENTITY_FLAG_DIE_ON_APPLY_COLLISION |
 ENTITY_FLAG_DYNAMICS |
 0;
 
+const Entity_kind_mask PLAYER_BULLET_APPLY_COLLISION_MASK =
+ENTITY_KIND_MASK_RAPTOR |
+ENTITY_KIND_MASK_BOSS   |
+0;
+
 const Entity_kind_mask ENEMY_KIND_MASK =
 ENTITY_KIND_MASK_RAPTOR |
 ENTITY_KIND_MASK_BOSS   |
-ENTITY_KIND_MASK_LEADER |
+ENTITY_KIND_MASK_PARENT |
 0;
 
 const float TYPING_SPEED   = 0.055f;
@@ -986,7 +1016,7 @@ Entity* spawn_player(Game *gp) {
     0;
 
   ep->update_order = ENTITY_ORDER_LAST;
-  ep->draw_order = ENTITY_ORDER_FIRST;
+  ep->draw_order = ENTITY_ORDER_LAST;
 
   ep->look_dir = PLAYER_LOOK_DIR;
 #ifdef DEBUG
@@ -1017,10 +1047,10 @@ Entity* spawn_player(Game *gp) {
   return ep;
 }
 
-Entity* spawn_leader(Game *gp) {
+Entity* spawn_parent(Game *gp) {
   Entity *ep = entity_spawn(gp);
 
-  ep->kind = ENTITY_KIND_LEADER;
+  ep->kind = ENTITY_KIND_PARENT;
 
   ep->flags =
     ENTITY_FLAG_DYNAMICS |
@@ -1037,6 +1067,41 @@ Entity* spawn_leader(Game *gp) {
   return ep;
 }
 
+Entity* spawn_shotgun(Game *gp) {
+  Entity *ep = entity_spawn(gp);
+
+  ep->kind = ENTITY_KIND_SHOTGUN;
+
+  ep->flags =
+    ENTITY_FLAG_HAS_GUN |
+    ENTITY_FLAG_APPLY_COLLISION |
+    ENTITY_FLAG_HAS_SPRITE |
+    0;
+
+  ep->update_order = ENTITY_ORDER_LAST;
+  ep->draw_order = ENTITY_ORDER_FIRST;
+
+  // nocheckin
+  ep->pos = (Vector2){ .x = 500, . y = 900 }; 
+
+  ep->apply_collision_mask =
+    ENTITY_KIND_MASK_PLAYER |
+    0;
+
+  ep->collide_proc = pick_up_shotgun;
+
+  ep->gun.kind = GUN_KIND_SHOTGUN;
+
+  ep->bounds_color = GREEN;
+  ep->sprite = SPRITE_SHOTGUN_SIDE;
+  ep->sprite_scale = 1.0f;
+  ep->sprite_tint = WHITE;
+
+  ep->radius = 10;
+
+  return ep;
+}
+
 Entity* spawn_health_pack(Game *gp) {
 
   Entity *ep = entity_spawn(gp);
@@ -1049,7 +1114,6 @@ Entity* spawn_health_pack(Game *gp) {
     ENTITY_FLAG_DIE_ON_APPLY_COLLISION |
     ENTITY_FLAG_APPLY_FRICTION |
     ENTITY_FLAG_HAS_SPRITE |
-    ENTITY_FLAG_NOT_ON_SCREEN |
     ENTITY_FLAG_EMIT_DEATH_PARTICLES |
     0;
 
@@ -1060,7 +1124,7 @@ Entity* spawn_health_pack(Game *gp) {
   ep->vel = (Vector2){ .y = (float)GetRandomValue(780, 800), };
   ep->friction = 0.45f;
 
-  ep->collide_proc = collide_with_health_pack;
+  ep->collide_proc = pick_up_health_pack;
 
   ep->death_particle_emitter = PARTICLE_EMITTER_GREEN_PUFF;
 
@@ -1070,7 +1134,7 @@ Entity* spawn_health_pack(Game *gp) {
 
   ep->bounds_color = GREEN;
   ep->sprite = SPRITE_HEALTH;
-  ep->sprite_scale = 3.0f;
+  ep->sprite_scale = 1.0f;
   ep->sprite_tint = WHITE;
 
   ep->radius = 40;
@@ -1078,15 +1142,33 @@ Entity* spawn_health_pack(Game *gp) {
   return ep;
 }
 
-void collide_with_health_pack(Game *gp, Entity *a, Entity *b) {
-  TODO("health pack");
-#if 0
+void pick_up_shotgun(Game *gp, Entity *a, Entity *b) {
+  ASSERT(a->kind == ENTITY_KIND_SHOTGUN);
+  ASSERT(b->kind == ENTITY_KIND_PLAYER);
 
+  Entity *shotgun = a;
+  Entity *player = b;
+
+  shotgun->flags |=
+    ENTITY_FLAG_MANUAL_SPRITE_ORIGIN |
+    0;
+
+  shotgun->parent_handle = handle_from_entity(player);
+  player->holding_gun_handle = handle_from_entity(shotgun);
+
+  shotgun->sprite = SPRITE_SHOTGUN_TOP;
+  shotgun->control = ENTITY_CONTROL_GUN_BEING_HELD;
+  shotgun->being_held_offset = (Vector2){ .x = -6, .y = 12 };
+
+}
+
+void pick_up_health_pack(Game *gp, Entity *a, Entity *b) {
   ASSERT(a->kind == ENTITY_KIND_HEALTH_PACK);
   ASSERT(b->kind == ENTITY_KIND_PLAYER);
 
-  if(b->health < PLAYER_HEALTH) {
-    b->health += 2;
+  b->health += 5;
+  if(b->health >= PLAYER_HEALTH) {
+    b->health = PLAYER_HEALTH;
   }
 
   b->effect_tint = GREEN;
@@ -1098,11 +1180,11 @@ void collide_with_health_pack(Game *gp, Entity *a, Entity *b) {
 
   b->effect_tint_timer = b->effect_tint_duration;
 
-  SetSoundPan(gp->health_pickup_sound, Normalize(a->pos.x, WINDOW_WIDTH, 0));
-  SetSoundVolume(gp->health_pickup_sound, 0.3);
-  PlaySound(gp->health_pickup_sound);
+  // nochecking sounds
+  //SetSoundPan(gp->health_pickup_sound, Normalize(a->pos.x, WINDOW_WIDTH, 0));
+  //SetSoundVolume(gp->health_pickup_sound, 0.3);
+  //PlaySound(gp->health_pickup_sound);
 
-#endif
 }
 
 void camera_shake(Game *gp, float duration, float magnitude) {
@@ -1421,257 +1503,249 @@ void entity_shoot_gun(Game *gp, Entity *ep) {
   Gun *gun = &ep->gun;
 
   if(!gun->cocked) {
+
+    gun->cocked = 1;
+
     switch(gun->kind) {
       default:
         break;
-    }
+      case GUN_KIND_SHOTGUN:
+        {
+          gun->bullet_kind = ENTITY_KIND_PLAYER_BULLET;
+          gun->bullet_collision_mask = PLAYER_BULLET_APPLY_COLLISION_MASK;
+          gun->cooldown_timer = 0.0f;
+          gun->cooldown_duration = 0.3f;
+          gun->shots = 1;
 
-    gun->cocked = 1;
+          // TODO sound effects
+          //gun->sound = kjsdhas;
+          gun->radius = ep->radius + 5.0f;
+          gun->n_arms = 3;
+          gun->arms_occupy_circle_sector_percent = 0.02f;
+          gun->n_bullets = 1;
+          gun->bullet_arm_width = 0.0f;
+          gun->bullet_radius = 15;
+          gun->bullet_vel = 1000;
+          gun->bullet_friction = 0.1f;
+          gun->bullet_damage = 10;
+          gun->bullet_bounds_color = GREEN;
+          gun->bullet_sprite = SPRITE_SHOTGUN_PELLET;
+          gun->bullet_sprite_tint = WHITE;
+          gun->bullet_sprite_scale = 1.0f;
+          gun->bullet_flags =
+            ENTITY_FLAG_HAS_SPRITE |
+            ENTITY_FLAG_EMIT_DEATH_PARTICLES |
+            ENTITY_FLAG_APPLY_FRICTION |
+            0;
+          gun->cam_shake_duration = 0.18f;
+          gun->cam_shake_magnitude = 2.0f;
+
+          // nocheckin tiny sparks
+          gun->bullet_death_particle_emitter = PARTICLE_EMITTER_SPARKS;
+
+        } break;
+      case GUN_KIND_ASSAULT_RIFLE:
+        {
+          UNIMPLEMENTED;
+        } break;
+      case GUN_KIND_GRENADE_LAUNCHER:
+        {
+          UNIMPLEMENTED;
+        } break;
+      case GUN_KIND_FLAMETHROWER:
+        {
+          UNIMPLEMENTED;
+        } break;
+    }
 
   }
 
   //ASSERT(gun->bullet_kind != ENTITY_KIND_INVALID);
 
-  { /* flags checks */
-  } /* flags checks */
-
-#if 0
-  {
-    b8 all_rings_finished = 1;
-
-    for(int i = 0; i < MAX_GUN_RINGS; i++) {
-      if((emitter->active_rings_mask & (1u<<(u32)i)) && emitter->shots[i] > 0) {
-        all_rings_finished = 0;
-      }
-    }
-
-    if(all_rings_finished) {
-      emitter->shoot--;
-    }
-
-    if(emitter->shoot <= 0) {
-      emitter->shoot = 0;
-      emitter->cocked = 0;
+  if(gun->shots <= 0) {
+    if(gun->flags & GUN_FLAG_AUTOMATIC) {
+      gun->shots = 1;
+    } else {
+      gun->shoot = 0;
+      gun->cocked = 0;
     }
   }
 
-  if(emitter->shoot) {
+  if(gun->shoot) {
 
-    for(int ring_i = 0; ring_i < MAX_GUN_RINGS; ring_i++) {
+    if(gun->flags & GUN_FLAG_BURST) {
 
-      if(!(emitter->active_rings_mask & (1u<<(u32)ring_i))) {
-        continue;
-      }
+      if(gun->burst_shots_fired >= gun->burst_shots) {
 
-      if(emitter->shots[ring_i] <= 0) {
-        continue;
-      }
+        if(gun->cooldown_timer <= 0.0f) {
+          gun->cooldown_timer = gun->cooldown_duration;
 
-      Bullet_emitter_ring *ring = &emitter->rings[ring_i];
-
-      if(ring->flags & GUN_RING_FLAG_BURST) {
-
-        if(ring->burst_shots_fired >= ring->burst_shots) {
-
-          if(emitter->cooldown_timer[ring_i] <= 0.0f) {
-            emitter->cooldown_timer[ring_i] = emitter->cooldown_duration[ring_i];
-
-            emitter->shots[ring_i]--;
-            ring->burst_timer = 0.0f;
-            ring->burst_shots_fired = 0;
-
-          } else {
-            emitter->cooldown_timer[ring_i] -= gp->dt;
-          }
-
-          continue;
+          gun->shots--;
+          gun->burst_timer = 0.0f;
+          gun->burst_shots_fired = 0;
 
         } else {
-
-          if(ring->burst_timer <= 0.0f) {
-            emitter->cooldown_timer[ring_i] = emitter->cooldown_duration[ring_i];
-            ring->burst_timer = ring->burst_cooldown;
-            ring->burst_shots_fired++;
-          } else {
-            ring->burst_timer -= gp->dt;
-            continue;
-          }
-
+          gun->cooldown_timer -= gp->dt;
         }
+
+        goto shoot_end;
 
       } else {
 
-        if(emitter->cooldown_timer[ring_i] <= 0.0f) {
-          emitter->cooldown_timer[ring_i] = emitter->cooldown_duration[ring_i];
-          emitter->shots[ring_i]--;
+        if(gun->burst_timer <= 0.0f) {
+          gun->cooldown_timer = gun->cooldown_duration;
+          gun->burst_timer = gun->burst_cooldown;
+          gun->burst_shots_fired++;
         } else {
-          emitter->cooldown_timer[ring_i] -= gp->dt;
-          continue;
+          gun->burst_timer -= gp->dt;
+          goto shoot_end;
         }
 
       }
 
-      ASSERT(ring->n_arms > 0);
-      ASSERT(ring->n_bullets > 0);
+    } else {
 
-      Vector2 arm_dir;
-      float arms_occupy_circle_sector_angle;
-      float arm_step_angle;
-      Vector2 look_at_player_dir = {0};
-
-      if(ring->flags & GUN_RING_FLAG_LOOK_AT_PLAYER) {
-
-        Entity *player = entity_from_handle(gp->player_handle);
-        ASSERT(player);
-
-        look_at_player_dir = Vector2Normalize(Vector2Subtract(player->pos, ep->pos));
-        ring->dir = look_at_player_dir;
-
-      } else if(!(ring->flags & GUN_RING_FLAG_MANUALLY_SET_DIR)) {
-        ring->dir = ep->look_dir;
-      }
-
-      float arm_angle;
-      Matrix arm_transform;
-
-      if(ring->n_arms == 1) {
-        arms_occupy_circle_sector_angle = 0;
-        arm_step_angle = 0;
-        arm_angle = ring->spin_cur_angle + ring->spin_start_angle;
-        arm_transform = MatrixRotateZ(arm_angle);
-        arm_dir = Vector2Transform(ring->dir, arm_transform);
+      if(gun->cooldown_timer <= 0.0f) {
+        gun->cooldown_timer = gun->cooldown_duration;
+        gun->shots--;
       } else {
-        ASSERT(ring->arms_occupy_circle_sector_percent > 0);
+        gun->cooldown_timer -= gp->dt;
 
-        arms_occupy_circle_sector_angle =
-          (2*PI) * ring->arms_occupy_circle_sector_percent;
-        arm_step_angle = arms_occupy_circle_sector_angle / (float)(ring->n_arms-1);
-        arm_angle = -0.5*arms_occupy_circle_sector_angle + ring->spin_cur_angle + ring->spin_start_angle;
-        arm_transform = MatrixRotateZ(arm_angle);
-        arm_dir = Vector2Transform(ring->dir, arm_transform);
+        goto shoot_end;
       }
 
-      for(int arm_i = 0; arm_i < ring->n_arms; arm_i++) {
+    }
 
-        Vector2 step_dir = {0};
-        Vector2 bullet_pos = Vector2Add(ep->pos, Vector2Scale(arm_dir, ring->radius));
-        Vector2 positions[MAX_BULLETS_IN_BAG];
+    ASSERT(gun->n_arms > 0);
+    ASSERT(gun->n_bullets > 0);
 
-        if(ring->flags & GUN_RING_FLAG_USE_POINT_BAG) {
+    Vector2 arm_dir;
+    float arms_occupy_circle_sector_angle;
+    float arm_step_angle;
 
-          Vector2 dir = ring->dir;
-          Vector2 dir_perp =
-          {
-            .x = dir.y, .y = -dir.x,
-          };
+    gun->dir = ep->look_dir;
 
-          Matrix dir_transform =
-          {
-            .m0 = dir_perp.x, .m4 = dir.x,
-            .m1 = dir_perp.y, .m5 = dir.y,
-          };
+    float arm_angle = 0.0;
+    Matrix arm_transform;
 
-          arm_transform = MatrixMultiply(arm_transform, dir_transform);
+    if(gun->n_arms == 1) {
+      arms_occupy_circle_sector_angle = 0;
+      arm_step_angle = 0;
+      arm_transform = MatrixRotateZ(arm_angle);
+      arm_dir = Vector2Transform(gun->dir, arm_transform);
+    } else {
+      ASSERT(gun->arms_occupy_circle_sector_percent > 0);
 
-          ASSERT(ring->n_bullets < MAX_BULLETS_IN_BAG);
+      arms_occupy_circle_sector_angle =
+        (2*PI) * gun->arms_occupy_circle_sector_percent;
+      arm_step_angle = arms_occupy_circle_sector_angle / (float)(gun->n_arms-1);
+      arm_angle = -0.5*arms_occupy_circle_sector_angle;
+      arm_transform = MatrixRotateZ(arm_angle);
+      arm_dir = Vector2Transform(gun->dir, arm_transform);
+    }
 
-          for(int i = 0; i < ring->n_bullets; i++) {
-            positions[i] = Vector2Add(bullet_pos, Vector2Transform(ring->bullet_point_bag[i], arm_transform));
-          }
+    for(int arm_i = 0; arm_i < gun->n_arms; arm_i++) {
 
-        } else {
-          if(ring->n_bullets > 1) {
-            ASSERT(ring->bullet_arm_width > 0);
+      Vector2 step_dir = {0};
+      Vector2 bullet_pos = Vector2Add(ep->pos, Vector2Scale(arm_dir, gun->radius));
+      Vector2 positions[MAX_BULLETS_IN_BAG];
 
-            Vector2 arm_dir_perp = { arm_dir.y, -arm_dir.x };
+      if(gun->flags & GUN_FLAG_USE_POINT_BAG) {
 
-            step_dir =
-              Vector2Scale(arm_dir_perp, ring->bullet_arm_width/(float)(ring->n_bullets-1));
+        Vector2 dir = gun->dir;
+        Vector2 dir_perp =
+        {
+          .x = dir.y, .y = -dir.x,
+        };
 
-            bullet_pos =
-              Vector2Add(bullet_pos, Vector2Scale(arm_dir_perp, -0.5*ring->bullet_arm_width));
-          }
+        Matrix dir_transform =
+        {
+          .m0 = dir_perp.x, .m4 = dir.x,
+          .m1 = dir_perp.y, .m5 = dir.y,
+        };
+
+        arm_transform = MatrixMultiply(arm_transform, dir_transform);
+
+        ASSERT(gun->n_bullets < MAX_BULLETS_IN_BAG);
+
+        for(int i = 0; i < gun->n_bullets; i++) {
+          positions[i] = Vector2Add(bullet_pos, Vector2Transform(gun->bullet_point_bag[i], arm_transform));
         }
-
-        for(int bullet_i = 0; bullet_i < ring->n_bullets; bullet_i++) {
-          Entity *bullet = entity_spawn(gp);
-
-          bullet->kind = emitter->bullet_kind;
-          bullet->update_order = ENTITY_ORDER_FIRST;
-          bullet->draw_order = ENTITY_ORDER_LAST;
-
-          bullet->flags = DEFAULT_BULLET_FLAGS | ring->bullet_flags;
-
-          bullet->bounds_color = ring->bullet_bounds_color;
-          bullet->fill_color = ring->bullet_fill_color;
-
-          bullet->sprite = ring->bullet_sprite;
-          bullet->sprite_rotation = ring->bullet_sprite_rotation;
-          bullet->sprite_scale = ring->bullet_sprite_scale;
-          bullet->sprite_tint = ring->bullet_sprite_tint;
-
-          bullet->scalar_vel = ring->bullet_vel;
-          bullet->vel = Vector2Scale(arm_dir, ring->bullet_vel);
-
-          if(IsSoundValid(ring->sound)) {
-            SetSoundPan(ring->sound, Normalize(ep->pos.x, WINDOW_WIDTH, 0));
-            SetSoundVolume(ring->sound, 0.2);
-            SetSoundPitch(ring->sound, get_random_float(0.98, 1.01, 4));
-            PlaySound(ring->sound);
-          }
-
-          bullet->friction = ring->bullet_friction;
-          //bullet->vel = Vector2Add(bullet->vel, Vector2Scale(ring->dir, Vector2DotProduct(ring->dir, ep->vel)));
-
-          bullet->curve = ring->bullet_curve;
-          bullet->curve_rolloff_vel = ring->bullet_curve_rolloff_vel;
-
-          bullet->radius = ring->bullet_radius;
-
-          bullet->apply_collision_mask = ep->bullet_emitter.bullet_collision_mask;
-          bullet->damage_amount = ring->bullet_damage;
-
-          bullet->spawn_particle_emitter = ring->bullet_spawn_particle_emitter;
-          bullet->death_particle_emitter = ring->bullet_death_particle_emitter;
-
-          if(ring->bullet_flags & ENTITY_FLAG_HAS_LIFETIME) {
-            bullet->life_time_duration = ring->bullet_lifetime;
-          }
-
-          if(ring->flags & GUN_RING_FLAG_USE_POINT_BAG) {
-            bullet->pos = positions[bullet_i];
-          } else {
-            bullet->pos = bullet_pos;
-            bullet_pos = Vector2Add(bullet_pos, step_dir);
-          }
-
-        } /* bullet loop */
-
-        arm_dir = Vector2Rotate(arm_dir, arm_step_angle);
-
-      } /* arm loop */
-
-      if(ring->flags & GUN_RING_FLAG_SPIN_WITH_SINE) {
-        ring->spin_cur_angle =
-          ring->spin_sine.amp * sinf(ring->spin_sine.freq * ring->spin_sine.t + ring->spin_sine.phase);
-
-        ring->spin_sine.t += gp->dt;
-        // TODO sine duration
-        //if(ring->spin_sine.t >= (1/ring->spin_sine.freq)) {
-        //  ring->spin_sine.t = 0;
-        //}
 
       } else {
-        ring->spin_cur_angle += ring->spin_vel * gp->dt;
-        if(ring->spin_cur_angle >= 2*PI) {
-          ring->spin_cur_angle = 0;
+        if(gun->n_bullets > 1) {
+          ASSERT(gun->bullet_arm_width > 0);
+
+          Vector2 arm_dir_perp = { arm_dir.y, -arm_dir.x };
+
+          step_dir =
+            Vector2Scale(arm_dir_perp, gun->bullet_arm_width/(float)(gun->n_bullets-1));
+
+          bullet_pos =
+            Vector2Add(bullet_pos, Vector2Scale(arm_dir_perp, -0.5*gun->bullet_arm_width));
         }
       }
 
-    } /* ring loop */
+      for(int bullet_i = 0; bullet_i < gun->n_bullets; bullet_i++) {
+        Entity *bullet = entity_spawn(gp);
 
+
+        bullet->kind = gun->bullet_kind;
+        bullet->update_order = ENTITY_ORDER_FIRST;
+        bullet->draw_order = ENTITY_ORDER_LAST;
+
+        bullet->flags = DEFAULT_BULLET_FLAGS | gun->bullet_flags;
+
+        bullet->bounds_color = gun->bullet_bounds_color;
+        bullet->fill_color = gun->bullet_fill_color;
+
+        bullet->sprite = gun->bullet_sprite;
+        bullet->sprite_rotation = gun->bullet_sprite_rotation;
+        bullet->sprite_scale = gun->bullet_sprite_scale;
+        bullet->sprite_tint = gun->bullet_sprite_tint;
+
+        bullet->scalar_vel = gun->bullet_vel;
+        bullet->vel = Vector2Scale(arm_dir, gun->bullet_vel);
+
+        camera_shake(gp, gun->cam_shake_duration, gun->cam_shake_magnitude);
+
+        if(IsSoundValid(gun->sound)) {
+          SetSoundPan(gun->sound, Normalize(ep->pos.x, WINDOW_WIDTH, 0));
+          SetSoundVolume(gun->sound, 0.2);
+          SetSoundPitch(gun->sound, get_random_float(0.98, 1.01, 4));
+          PlaySound(gun->sound);
+        }
+
+        bullet->friction = gun->bullet_friction;
+        //bullet->vel = Vector2Add(bullet->vel, Vector2Scale(gun->dir, Vector2DotProduct(gun->dir, ep->vel)));
+
+        bullet->radius = gun->bullet_radius;
+
+        bullet->apply_collision_mask = ep->gun.bullet_collision_mask;
+        bullet->damage_amount = gun->bullet_damage;
+
+        bullet->spawn_particle_emitter = gun->bullet_spawn_particle_emitter;
+        bullet->death_particle_emitter = gun->bullet_death_particle_emitter;
+
+        if(gun->bullet_flags & ENTITY_FLAG_HAS_LIFETIME) {
+          bullet->life_time_duration = gun->bullet_lifetime;
+        }
+
+        if(gun->flags & GUN_FLAG_USE_POINT_BAG) {
+          bullet->pos = positions[bullet_i];
+        } else {
+          bullet->pos = bullet_pos;
+          bullet_pos = Vector2Add(bullet_pos, step_dir);
+        }
+
+      } /* bullet loop */
+
+      arm_dir = Vector2Rotate(arm_dir, arm_step_angle);
+
+    } /* arm loop */
+
+shoot_end:;
   }
-#endif
 
 }
 
@@ -1802,8 +1876,10 @@ void draw_sprite(Game *gp, Entity *ep) {
     source_rec.height *= -1;
   }
 
-  Vector2 origin =
-  { dest_rec.width*0.5f, dest_rec.height*0.5f };
+  Vector2 origin = { dest_rec.width*0.5f, dest_rec.height*0.5f };
+
+  if(ep->flags & ENTITY_FLAG_MANUAL_SPRITE_ORIGIN) {
+  }
 
   //DrawRectanglePro(dest_rec, origin, rotation, SKYBLUE);
   DrawTexturePro(gp->sprite_atlas, source_rec, dest_rec, origin, rotation, tint);
@@ -2187,7 +2263,6 @@ void game_update_and_draw(Game *gp) {
 
             //memory_set(&gp->phase, 0, sizeof(gp->phase));
 
-            gp->flags |= GAME_FLAG_PLAYER_CANNOT_SHOOT;
           }
 
           goto update_end;
@@ -2237,6 +2312,9 @@ void game_update_and_draw(Game *gp) {
             gp->flags |=
               GAME_FLAG_DRAW_IN_CAMERA |
               0;
+
+            spawn_shotgun(gp);
+
           } else {
 
 
@@ -2285,10 +2363,11 @@ void game_update_and_draw(Game *gp) {
                   float len = Vector2Length(look_dir);
 
                   if(len > 0.001f) {
-                    look_dir = Vector2Normalize(look_dir);
+                    look_dir = Vector2Scale(look_dir, 1.0f/len);
 
                     ep->look_dir = look_dir;
-                    ep->sprite_rotation = -atan2f(look_dir.x, look_dir.y) * RAD2DEG;
+                    ep->look_angle = -atan2f(look_dir.x, look_dir.y);
+                    ep->sprite_rotation = ep->look_angle * RAD2DEG;
                   }
 
                 } /* mouse look */
@@ -2350,13 +2429,21 @@ void game_update_and_draw(Game *gp) {
 
                 if(gp->input_flags & INPUT_FLAG_SHOOT) {
 
-                  camera_shake(gp, 0.15, 1.8f);
+                  //camera_shake(gp, 0.15, 1.8f);
                   //camera_shake(gp, 0.1f, 1.0f);
                   //camera_pulsate(gp, 0.18f, 0.16f);
 
-                  if(!(gp->flags & GAME_FLAG_PLAYER_CANNOT_SHOOT)) {
-                    ep->gun.shoot = 1;
+                  Entity *gun = entity_from_handle(ep->holding_gun_handle);
+                  if(gun) {
+                    gun->gun.shoot = 1;
                   }
+
+                  //if(!(gp->flags & GAME_FLAG_PLAYER_CANNOT_SHOOT)) {
+                  //  Entity *gun = entity_from_handle(ep->holding_gun_handle);
+                  //  if(gun) {
+                  //    gun->gun.shoot = 1;
+                  //  }
+                  //}
                 }
 
                 if(gp->debug_flags & GAME_DEBUG_FLAG_PLAYER_INVINCIBLE) {
@@ -2365,20 +2452,35 @@ void game_update_and_draw(Game *gp) {
                 }
 
               } break;
-            case ENTITY_CONTROL_COPY_LEADER:
+            case ENTITY_CONTROL_GUN_BEING_HELD:
               {
-                Entity *leader = entity_from_handle(ep->leader_handle);
-                ASSERT(leader);
+                Entity *parent = entity_from_handle(ep->parent_handle);
+                ASSERT(parent);
 
-                ep->vel = leader->vel;
+                ep->look_dir = parent->look_dir;
+                ep->look_angle = parent->look_angle;
+
+                float angle = parent->look_angle;
+                ep->sprite_rotation = parent->sprite_rotation;
+                ep->manual_sprite_origin = parent->pos;
+                Vector2 offset = Vector2Rotate(ep->being_held_offset, angle);
+                ep->pos = Vector2Add(parent->pos, offset);
 
               } break;
-            case ENTITY_CONTROL_FOLLOW_LEADER:
+            case ENTITY_CONTROL_COPY_PARENT:
               {
-                Entity *leader = entity_from_handle(ep->leader_handle);
-                ASSERT(leader);
+                Entity *parent = entity_from_handle(ep->parent_handle);
+                ASSERT(parent);
 
-                Vector2 dir = Vector2Normalize(Vector2Subtract(leader->pos, ep->pos));
+                ep->vel = parent->vel;
+
+              } break;
+            case ENTITY_CONTROL_FOLLOW_PARENT:
+              {
+                Entity *parent = entity_from_handle(ep->parent_handle);
+                ASSERT(parent);
+
+                Vector2 dir = Vector2Normalize(Vector2Subtract(parent->pos, ep->pos));
                 ep->vel = Vector2Scale(dir, ep->scalar_vel);
 
               } break;
