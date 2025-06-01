@@ -52,6 +52,7 @@
   X(MAIN_LOOP)                  \
   X(VICTORY)                    \
   X(DEBUG_SANDBOX)              \
+  X(EDITOR)                     \
 
 #define GAME_DEBUG_FLAGS       \
   X(DEBUG_UI)                  \
@@ -175,6 +176,9 @@
  */
 
 typedef struct Game Game;
+typedef struct Map_data Map_data;
+typedef struct Editor Editor;
+typedef struct Edit_tile Edit_tile;
 typedef struct Entity Entity;
 typedef Entity* Entity_ptr;
 typedef struct Particle Particle;
@@ -359,6 +363,8 @@ DECL_ARR_TYPE(Entity_ptr);
 DECL_SLICE_TYPE(Entity_ptr);
 DECL_ARR_TYPE(Rectangle);
 DECL_SLICE_TYPE(Rectangle);
+DECL_SLICE_TYPE(u8);
+DECL_ARR_TYPE(Edit_tile);
 
 
 /*
@@ -564,6 +570,19 @@ struct Entity {
 
 };
 
+struct Map_data {
+  Vector2 origin;
+  Slice_u8 tiles;
+};
+
+struct Edit_tile {
+};
+
+// TODO level editor
+struct Editor {
+  Arr_Edit_tile tiles;
+};
+
 struct Game {
 
   f32 dt;
@@ -660,6 +679,8 @@ struct Game {
   Music music;
   b32 music_pos_saved;
   f32 music_pos;
+
+  Editor editor;
 
 };
 
@@ -2540,6 +2561,12 @@ void game_update_and_draw(Game *gp) {
 
 
           }
+
+        } break;
+      case GAME_STATE_EDITOR:
+        {
+
+          TODO("level editor");
 
         } break;
 #endif
