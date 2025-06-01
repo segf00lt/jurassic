@@ -100,6 +100,7 @@
 
 #define ENTITY_FLAGS                 \
   X(DYNAMICS)                        \
+  X(SPINNING)                        \
   X(HAS_SPRITE)                      \
   X(MANUAL_SPRITE_ORIGIN)            \
   X(APPLY_FRICTION)                  \
@@ -141,6 +142,7 @@
   X(PINK_PUFF)                   \
   X(GREEN_PUFF)                  \
   X(BROWN_PUFF)                  \
+  X(WEAPON_DIE_PUFF)             \
   X(WHITE_PUFF)                  \
   X(BIG_PLANE_EXPLOSION)         \
 
@@ -404,8 +406,6 @@ struct Gun {
   f32          bullet_radius;
   f32          bullet_vel;
   f32          bullet_friction;
-  f32          bullet_curve;
-  f32          bullet_curve_rolloff_vel;
   s32          bullet_damage;
   f32          bullet_lifetime;
   Color        bullet_bounds_color;
@@ -509,6 +509,7 @@ struct Entity {
   f32     scalar_vel;
   f32     friction;
   f32     look_angle;
+  f32     spin_vel;
 
   f32 shooting_pause_timer;
   f32 start_shooting_delay;
@@ -747,8 +748,8 @@ const float PLAYER_LOOK_RADIUS = 200.0f;
 
 const float PICKUP_BOUNDS_RADIUS = 50.0f;
 
-const float INTERACT_RADIUS = 20;
-const float WEAPON_RADIUS = 14;
+const float WEAPON_INTERACT_RADIUS = 50;
+const float WEAPON_RADIUS = 12;
 
 const Entity_flags DEFAULT_BULLET_FLAGS =
 ENTITY_FLAG_APPLY_COLLISION |
@@ -1093,6 +1094,7 @@ Entity* spawn_shotgun(Game *gp) {
     ENTITY_FLAG_HAS_GUN |
     ENTITY_FLAG_APPLY_COLLISION |
     ENTITY_FLAG_IS_INTERACTABLE |
+    ENTITY_FLAG_EMIT_DEATH_PARTICLES |
     ENTITY_FLAG_HAS_SPRITE |
     0;
 
@@ -1111,12 +1113,14 @@ Entity* spawn_shotgun(Game *gp) {
 
   ep->gun.kind = GUN_KIND_SHOTGUN;
 
+  ep->death_particle_emitter = PARTICLE_EMITTER_WEAPON_DIE_PUFF;
+
   ep->bounds_color = GREEN;
   ep->sprite = SPRITE_SHOTGUN_SIDE;
   ep->sprite_scale = 1.0f;
   ep->sprite_tint = WHITE;
 
-  ep->interact_radius = INTERACT_RADIUS;
+  ep->interact_radius = WEAPON_INTERACT_RADIUS;
   ep->radius = WEAPON_RADIUS;
 
   return ep;
@@ -1131,6 +1135,7 @@ Entity* spawn_assault_rifle(Game *gp) {
     ENTITY_FLAG_HAS_GUN |
     ENTITY_FLAG_APPLY_COLLISION |
     ENTITY_FLAG_IS_INTERACTABLE |
+    ENTITY_FLAG_EMIT_DEATH_PARTICLES |
     ENTITY_FLAG_HAS_SPRITE |
     0;
 
@@ -1149,12 +1154,14 @@ Entity* spawn_assault_rifle(Game *gp) {
 
   ep->gun.kind = GUN_KIND_ASSAULT_RIFLE;
 
+  ep->death_particle_emitter = PARTICLE_EMITTER_WEAPON_DIE_PUFF;
+
   ep->bounds_color = GREEN;
   ep->sprite = SPRITE_ASSAULT_RIFLE_SIDE;
   ep->sprite_scale = 1.0f;
   ep->sprite_tint = WHITE;
 
-  ep->interact_radius = INTERACT_RADIUS;
+  ep->interact_radius = WEAPON_INTERACT_RADIUS;
   ep->radius = WEAPON_RADIUS;
 
   return ep;
@@ -1423,6 +1430,36 @@ void entity_emit_particles(Game *gp, Entity *ep) {
         }
 
       } break;
+    case PARTICLE_EMITTER_WEAPON_DIE_PUFF:
+      {
+        n_particles = GetRandomValue(10, 15);
+        ASSERT(n_particles <= MAX_PARTICLES);
+
+        for(int i = 0; i < n_particles; i++) {
+          Particle *p = buf + i;
+          *p = (Particle){0};
+
+          p->lifetime = get_random_float(TARGET_FRAME_TIME * 30, TARGET_FRAME_TIME * 40, 10);
+
+          p->pos = ep->pos;
+          p->vel =
+            Vector2Rotate((Vector2){ 0, -1 },
+                get_random_float(0, 2*PI, 150));
+
+          p->vel = Vector2Scale(p->vel, (float)GetRandomValue(80, 90));
+
+          p->radius = get_random_float(0.9f, 1.7f, 4);
+          p->shrink = (0.46*p->radius)/p->lifetime;
+
+
+          p->friction = get_random_float(0.05f, 0.1f, 4);
+
+          p->begin_tint = (Color){ 58, 58, 58, 255 };
+          p->end_tint = ColorAlpha(p->begin_tint, 0.8);
+
+        }
+
+      } break;
     case PARTICLE_EMITTER_BROWN_PUFF:
       {
         n_particles = GetRandomValue(10, 15);
@@ -1633,7 +1670,7 @@ void entity_shoot_gun(Game *gp, Entity *ep) {
           //gun->sound = kjsdhas;
           gun->radius = ep->radius + 5.0f;
           gun->n_arms = 6;
-          gun->arms_occupy_circle_sector_percent = 0.02f;
+          gun->arms_occupy_circle_sector_percent = 0.06f;
           gun->n_bullets = 1;
           gun->bullet_arm_width = 0.0f;
           gun->bullet_radius = 3;
@@ -1839,6 +1876,8 @@ void entity_shoot_gun(Game *gp, Entity *ep) {
 
         bullet->bounds_color = gun->bullet_bounds_color;
         bullet->fill_color = gun->bullet_fill_color;
+        bullet->look_dir = ep->look_dir;
+        bullet->look_angle = ep->look_angle;
 
         bullet->sprite = gun->bullet_sprite;
         bullet->sprite_rotation = ep->look_angle * RAD2DEG;
@@ -1903,6 +1942,8 @@ force_inline b32 entity_check_collision(Game *gp, Entity *a, Entity *b) {
 }
 
 void sprite_update(Game *gp, Entity *ep) {
+  ep->sprite_rotation = ep->look_angle * RAD2DEG;
+
   Sprite *sp = &ep->sprite;
   if(!(sp->flags & SPRITE_FLAG_STILL)) {
 
@@ -2163,10 +2204,11 @@ void game_main_loop(Game *gp) {
    * NOTE gameplay ideas
    *
    * Time limit to clear the level, postvoid style.
+   * Justification: the USA is going to nuke the island you're on to get rid of the dinossaur-human hybrids.
    *
    * The theme is "unpredictable"
    *
-   * Weapons you pick up could be jammed, forcing you to throw them at your enemy
+   * Weapons you pick up could be jammed, forcing you to look for another quickly or throw them at your enemies.
    *
    * Parts of the map with supplies could randomly become inaccessable on a given run
    *
@@ -2178,6 +2220,13 @@ void game_main_loop(Game *gp) {
    *
    * There is a chance that your weapon will fire itself when you throw it. This will deal reduced damage if it hits you.
    * How should we telegraph it though??
+   *
+   * Some rooms could randomly have enemies instead of supplies.
+   *
+   * Certain doors require keys.
+   *
+   * Some special rooms could be locked, and maybe the key randomly spawns in one of a handfull of rooms.
+   * These rooms wouldn't be essential to completing a run, just extra stuff.
    *
    */
   UNIMPLEMENTED;
@@ -2549,20 +2598,23 @@ void game_update_and_draw(Game *gp) {
                 if(gp->input_flags & INPUT_FLAG_MOVE) {
 
                   if(gp->input_flags & INPUT_FLAG_MOVE_LEFT) {
-                    ep->accel.x = -PLAYER_ACCEL;
+                    ep->accel.x = -1;
                   }
 
                   if(gp->input_flags & INPUT_FLAG_MOVE_RIGHT) {
-                    ep->accel.x += PLAYER_ACCEL;
+                    ep->accel.x += 1;
                   }
 
                   if(gp->input_flags & INPUT_FLAG_MOVE_FORWARD) {
-                    ep->accel.y = -PLAYER_ACCEL;
+                    ep->accel.y = -1;
                   }
 
                   if(gp->input_flags & INPUT_FLAG_MOVE_BACKWARD) {
-                    ep->accel.y += PLAYER_ACCEL;
+                    ep->accel.y += 1;
                   }
+
+                  ep->accel = Vector2Normalize(ep->accel);
+                  ep->accel = Vector2Scale(ep->accel, PLAYER_ACCEL);
 
                 } else {
                   ep->vel = (Vector2){0};
@@ -2627,8 +2679,36 @@ void game_update_and_draw(Game *gp) {
                 }
 
                 if(gp->input_flags & INPUT_FLAG_INTERACT) {
-
                   ep->flags |= ENTITY_FLAG_INTERACT;
+                }
+
+                if(gp->input_flags & INPUT_FLAG_THROW) {
+
+                  Entity *holding = entity_from_handle(ep->holding_gun_handle);
+
+                  if(holding) {
+                    holding->flags ^=
+                      ENTITY_FLAG_DYNAMICS |
+                      ENTITY_FLAG_SPINNING |
+                      ENTITY_FLAG_APPLY_FRICTION |
+                      ENTITY_FLAG_APPLY_COLLISION_DAMAGE |
+                      ENTITY_FLAG_DIE_ON_APPLY_COLLISION |
+                      ENTITY_FLAG_HAS_LIFETIME |
+                      ENTITY_FLAG_IS_INTERACTABLE |
+                      0;
+
+                    holding->control = ENTITY_CONTROL_NONE;
+                    holding->parent_handle = (Entity_handle){0};
+                    holding->vel = Vector2Scale(ep->look_dir, 900);
+                    holding->spin_vel = PI*3.7f;
+                    holding->friction = 1.0f;
+                    holding->damage_amount = holding->gun.bullet_damage << 2;
+                    holding->life_time_duration = 0.7f;
+                    holding->apply_collision_mask =
+                      ENTITY_KIND_MASK_RAPTOR |
+                      0;
+                  }
+
                 }
 
                 if(gp->debug_flags & GAME_DEBUG_FLAG_PLAYER_INVINCIBLE) {
@@ -2696,7 +2776,7 @@ void game_update_and_draw(Game *gp) {
               } break;
           }
 
-          /* flags stuff */
+          /* entity flags stuff */
 
           if(ep->flags & ENTITY_FLAG_APPLY_FRICTION) {
             ep->vel = Vector2Subtract(ep->vel, Vector2Scale(ep->vel, ep->friction*gp->dt));
@@ -2706,6 +2786,12 @@ void game_update_and_draw(Game *gp) {
             Vector2 a_times_t = Vector2Scale(ep->accel, gp->dt);
             ep->vel = Vector2Add(ep->vel, a_times_t);
             ep->pos = Vector2Add(ep->pos, Vector2Add(Vector2Scale(ep->vel, gp->dt), Vector2Scale(a_times_t, 0.5*gp->dt)));
+          }
+
+          if(ep->flags & ENTITY_FLAG_SPINNING) {
+            float turn = ep->spin_vel * gp->dt;
+            ep->look_angle += turn;
+            //ep->look_dir = Vector2Rotate(ep->look_dir, turn);
           }
 
           if(ep->flags & ENTITY_FLAG_HAS_GUN) {
@@ -2724,7 +2810,9 @@ void game_update_and_draw(Game *gp) {
               if(ep != interacting && interacting->live) {
 
                 if(interacting->flags & ENTITY_FLAG_IS_INTERACTABLE) {
-                  if(entity_check_collision(gp, ep, interacting)) {
+                  bool is_interacting =
+                    CheckCollisionPointCircle(ep->pos, interacting->pos, interacting->interact_radius);
+                  if(is_interacting) {
 
                     interacting->interact_proc(gp, interacting, ep);
                     break;
@@ -3013,7 +3101,17 @@ update_end:;
             bounds_color.a = 150;
             DrawCircleLinesV(ep->pos, ep->radius, ep->bounds_color);
 
+            if(ep->interact_radius > 0) {
+              DrawCircleLinesV(ep->pos, ep->interact_radius, YELLOW);
+            }
+
             DrawCircleV(ep->pos, 4.0f, bounds_color);
+
+            float look_len = Vector2Length(ep->look_dir);
+            if(look_len > 0.0001f) {
+              Vector2 look = Vector2Scale(ep->look_dir, (ep->radius+5.0f)/look_len);
+              DrawLineEx(ep->pos, Vector2Add(ep->pos, look), 1.0f, ep->bounds_color);
+            }
           }
 
         } /* entity_draw */
