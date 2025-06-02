@@ -1657,6 +1657,10 @@ Vector2 GetScreenToWorld2D(Vector2 position, Camera2D camera)
     return (Vector2){ transform.x, transform.y };
 }
 
+Vector2 GetMousePositionWorld2D(Camera2D camera) {
+  return GetScreenToWorld2D(GetMousePosition(), camera);
+}
+
 //----------------------------------------------------------------------------------
 // Module Functions Definition: Timming
 //----------------------------------------------------------------------------------

@@ -31,13 +31,16 @@
 #define MAX_PARENTS 32
 #define MAX_ENTITY_LISTS 16
 
-#define MAX_TILE_ROWS 256
-#define MAX_TILE_COLS 256
-#define MAX_TILES (MAX_TILE_ROWS*MAX_TILE_COLS)
+#define TILE_SIZE 32
+#define INV_TILE_SIZE ((float)(1.0f/(float)TILE_SIZE))
+#define TILE_ROWS 256
+#define TILE_COLS 256
+#define TILES_COUNT (TILE_ROWS*TILE_COLS)
 
 #define BLOOD ((Color){ 255, 0, 0, 255 })
 
 #define INITIAL_CAMERA_ZOOM ((float)3.0f)
+#define DEFAULT_CAMERA_TARGET ((Vector2){ 400, 400 })
 
 
 /*
@@ -62,6 +65,7 @@
   X(SANDBOX_LOADED)            \
   X(SKIP_TRANSITIONS)          \
   X(MUTE)                      \
+  X(FREE_CAM)                  \
 
 #define GAME_FLAGS         \
   X(PAUSE)                 \
@@ -179,7 +183,6 @@
 typedef struct Game Game;
 typedef struct Map_data Map_data;
 typedef struct Editor Editor;
-typedef struct Edit_tile Edit_tile;
 typedef struct Entity Entity;
 typedef Entity* Entity_ptr;
 typedef struct Particle Particle;
@@ -365,7 +368,8 @@ DECL_SLICE_TYPE(Entity_ptr);
 DECL_ARR_TYPE(Rectangle);
 DECL_SLICE_TYPE(Rectangle);
 DECL_SLICE_TYPE(u8);
-DECL_ARR_TYPE(Edit_tile);
+DECL_ARR_TYPE(Entity);
+DECL_SLICE_TYPE(Entity);
 
 
 /*
@@ -572,17 +576,13 @@ struct Entity {
 };
 
 struct Map_data {
-  Vector2 origin;
   Slice_u8 tiles;
-};
-
-struct Edit_tile {
-  int x;
 };
 
 // TODO level editor
 struct Editor {
-  Arr_Edit_tile tiles;
+  u8 *tiles;
+  Arr_Entity static_entities;
 };
 
 struct Game {
@@ -751,6 +751,9 @@ Sprite_frame sprite_current_frame(Sprite sp);
 b32 sprite_at_keyframe(Sprite sp, s32 keyframe);
 b32 sprite_equals(Sprite a, Sprite b);
 
+s64 tile_from_point(Vector2 p);
+Vector2 point_from_tile(s64 tile);
+
 
 /*
  * entity settings
@@ -822,6 +825,8 @@ const Color MUSTARD = { 234, 200, 0, 255 };
 /*
  * globals
  */
+
+bool editor_mouse_grab = false;
 
 bool cleared_screen_on_victory = false;
 
@@ -2107,12 +2112,15 @@ Game* game_init(void) {
   Game *gp = os_alloc(sizeof(Game));
   memory_set(gp, 0, sizeof(Game));
 
-  gp->entities = os_alloc(sizeof(Entity) * MAX_ENTITIES);
-  gp->particles = os_alloc(sizeof(Particle) * MAX_PARTICLES);
-
-  gp->main_arena = arena_alloc();
+  gp->main_arena  = arena_alloc(.size = MB(3));
   gp->level_arena = arena_alloc(.size = KB(16));
   gp->frame_arena = arena_alloc(.size = KB(8));
+
+  gp->entities  = push_array_no_zero(gp->main_arena, Entity, MAX_ENTITIES);
+  gp->particles = push_array_no_zero(gp->main_arena, Particle, MAX_PARTICLES);
+
+  gp->editor.tiles = push_array(gp->main_arena, u8, TILES_COUNT);
+  arr_init_ex(gp->editor.static_entities, gp->main_arena, 64);
 
   gp->cam =
     (Camera2D) {
@@ -2182,6 +2190,7 @@ void game_reset(Game *gp) {
   gp->next_state = GAME_STATE_NONE;
 
   gp->flags = 0;
+  gp->cam.target = DEFAULT_CAMERA_TARGET;
 
   gp->player = 0;
   gp->player_handle = (Entity_handle){0};
@@ -2220,6 +2229,31 @@ void game_level_end(Game *gp) {
   gp->level++;
   gp->next_state = GAME_STATE_START_LEVEL;
   gp->flags |= GAME_FLAG_PLAYER_CANNOT_SHOOT;
+}
+
+s64 tile_from_point(Vector2 p) {
+
+  s64 col = Clamp((s64)(p.x * INV_TILE_SIZE), 0, TILE_COLS);
+  s64 row = Clamp((s64)(p.y * INV_TILE_SIZE), 0, TILE_ROWS);
+
+  s64 tile = col + row * TILE_COLS;
+
+  return tile;
+
+}
+
+Vector2 point_from_tile(s64 tile) {
+
+  s64 col = tile % TILE_ROWS;
+  s64 row = tile / TILE_ROWS;
+
+  Vector2 p =
+  {
+    .x = TILE_SIZE * (float)col,
+    .y = TILE_SIZE * (float)row,
+  };
+
+  return p;
 }
 
 void game_main_loop(Game *gp) {
@@ -2561,6 +2595,7 @@ void game_update_and_draw(Game *gp) {
 
           } else {
 
+            gp->next_state = GAME_STATE_EDITOR;
 
           }
 
@@ -2568,7 +2603,46 @@ void game_update_and_draw(Game *gp) {
       case GAME_STATE_EDITOR:
         {
 
-          TODO("level editor");
+          gp->debug_flags |=
+            GAME_DEBUG_FLAG_FREE_CAM |
+            0;
+
+
+          if(IsKeyDown(KEY_LEFT_SHIFT)) {
+            float offset_x = 45*GetMouseWheelMoveV().y;
+            gp->cam.target.x += offset_x;
+          } else if(IsKeyDown(KEY_LEFT_CONTROL)) {
+            float offset_y = 45*GetMouseWheelMoveV().y;
+            gp->cam.target.y += offset_y;
+          } else {
+            float adjust_zoom = 0.4f*GetMouseWheelMoveV().y;
+
+            if(gp->cam.zoom + adjust_zoom > 0.0) {
+              gp->cam.zoom += adjust_zoom;
+            }
+          }
+
+          if(IsKeyPressed(KEY_EQUAL)) {
+            gp->cam.zoom = INITIAL_CAMERA_ZOOM;
+          }
+
+          if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            Vector2 p = GetMousePositionWorld2D(gp->cam);
+            s64 tile = tile_from_point(p);
+            ASSERT(tile >= 0 && tile <= TILES_COUNT);
+            gp->editor.tiles[tile] = 1;
+          } else if(IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+            Vector2 p = GetMousePositionWorld2D(gp->cam);
+            s64 tile = tile_from_point(p);
+            ASSERT(tile >= 0 && tile <= TILES_COUNT);
+            gp->editor.tiles[tile] = 0;
+          } else if(IsMouseButtonDown(MOUSE_MIDDLE_BUTTON)) {
+            gp->cam.target =
+              Vector2Subtract(gp->cam.target,
+                  Vector2Scale(GetMouseDelta(), 0.4f));
+          }
+
+          goto update_end;
 
         } break;
 #endif
@@ -3072,15 +3146,19 @@ update_end:;
         (float)GetScreenHeight()*0.5f,
       };
 
-    if(gp->player) {
-      gp->cam.target = gp->player->pos;
+    if(!(gp->debug_flags & GAME_DEBUG_FLAG_FREE_CAM)) {
 
-      if(gp->flags & GAME_FLAG_CAMERA_SHAKE) {
-        gp->cam.target = Vector2Add(gp->cam.target, gp->cam_shake.offset);
-      }
+      if(gp->player) {
+        gp->cam.target = gp->player->pos;
 
-      if(gp->flags & GAME_FLAG_CAMERA_PULSATE) {
-        gp->cam.zoom = gp->cam_pulsate.save_zoom - gp->cam_pulsate.zoom_offset; 
+        if(gp->flags & GAME_FLAG_CAMERA_SHAKE) {
+          gp->cam.target = Vector2Add(gp->cam.target, gp->cam_shake.offset);
+        }
+
+        if(gp->flags & GAME_FLAG_CAMERA_PULSATE) {
+          gp->cam.zoom = gp->cam_pulsate.save_zoom - gp->cam_pulsate.zoom_offset; 
+        }
+
       }
 
     }
@@ -3101,6 +3179,49 @@ update_end:;
         };
 
         DrawTextureRec(gp->debug_background, rec, pos, WHITE);
+      }
+
+      if(gp->state == GAME_STATE_EDITOR) {
+
+        Editor *editor = &gp->editor;
+
+        for(s64 i = 0; i < TILES_COUNT; i++) {
+          if(editor->tiles[i]) {
+            Vector2 tile_point = point_from_tile(i);
+
+            {
+              Rectangle rec =
+              {
+                .x = tile_point.x,
+                .y = tile_point.y,
+                .width = TILE_SIZE,
+                .height = TILE_SIZE,
+              };
+
+              DrawRectangleRec(rec, SKYBLUE);
+            }
+
+          }
+        }
+
+        Vector2 p = GetMousePositionWorld2D(gp->cam);
+
+        Vector2 tile_point = point_from_tile(tile_from_point(p));
+
+        {
+          Rectangle rec =
+          {
+            .x = tile_point.x,
+            .y = tile_point.y,
+            .width = TILE_SIZE,
+            .height = TILE_SIZE,
+          };
+
+          DrawRectangleRec(rec, ColorAlpha(ORANGE, 0.7));
+        }
+
+        DrawGrid2D(1000, TILE_SIZE);
+
       }
 
       for(Entity_order order = ENTITY_ORDER_FIRST; order < ENTITY_ORDER_MAX; order++) {

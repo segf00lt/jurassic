@@ -1061,6 +1061,25 @@ void DrawRay(Ray ray, Color color)
     rlEnd();
 }
 
+// ~jfd: grid for 2D games
+void DrawGrid2D(int slices, float spacing) {
+  int halfSlices = slices >> 1;
+  rlBegin(RL_LINES);
+  for(int i = -halfSlices; i <= halfSlices; i++) {
+    rlColor3f(0.5f, 0.5f, 0.5f);
+    rlColor3f(0.5f, 0.5f, 0.5f);
+    rlColor3f(0.5f, 0.5f, 0.5f);
+    rlColor3f(0.5f, 0.5f, 0.5f);
+
+    rlVertex2f((float)i*spacing, (float)-halfSlices*spacing);
+    rlVertex2f((float)i*spacing, (float)halfSlices*spacing);
+
+    rlVertex2f((float)-halfSlices*spacing, (float)i*spacing);
+    rlVertex2f((float)halfSlices*spacing, (float)i*spacing);
+  }
+  rlEnd();
+}
+
 // Draw a grid centered at (0, 0, 0)
 void DrawGrid(int slices, float spacing)
 {

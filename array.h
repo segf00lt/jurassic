@@ -44,6 +44,9 @@ struct __Slice_header {
 #define Arr(T)   Arr_##T
 #define Slice(T) Slice_##T
 
+// NOTE is this a good idea??
+//#define decl_arr(T, name, arena) Arr_##T name = {0}; arr_init(name, arena)
+
 #define header_from_arr(arr)         (*(__Arr_header*)(void*)(&(arr)))
 #define header_from_arr_ptr(arr)     (*(__Arr_header*)(void*)(arr))
 #define header_ptr_from_arr(arr)     ((__Arr_header*)(void*)(&(arr)))
