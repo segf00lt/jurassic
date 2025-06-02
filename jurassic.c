@@ -19,9 +19,6 @@
 #define TARGET_FPS 60
 #define TARGET_FRAME_TIME ((float)(1.0f / (float)TARGET_FPS))
 
-//#define WINDOW_SCALE 320
-//#define WINDOW_WIDTH  (4*WINDOW_SCALE)
-//#define WINDOW_HEIGHT (3*WINDOW_SCALE)
 #define WINDOW_WIDTH  ((float)GetScreenWidth())
 #define WINDOW_HEIGHT ((float)GetScreenHeight())
 
@@ -33,6 +30,10 @@
 #define MAX_BULLETS_IN_BAG 8
 #define MAX_PARENTS 32
 #define MAX_ENTITY_LISTS 16
+
+#define MAX_TILE_ROWS 256
+#define MAX_TILE_COLS 256
+#define MAX_TILES (MAX_TILE_ROWS*MAX_TILE_COLS)
 
 #define BLOOD ((Color){ 255, 0, 0, 255 })
 
@@ -576,6 +577,7 @@ struct Map_data {
 };
 
 struct Edit_tile {
+  int x;
 };
 
 // TODO level editor
@@ -2726,11 +2728,11 @@ void game_update_and_draw(Game *gp) {
 
                     holding->control = ENTITY_CONTROL_NONE;
                     holding->parent_handle = (Entity_handle){0};
-                    holding->vel = Vector2Scale(ep->look_dir, 900);
-                    holding->spin_vel = PI*3.7f;
+                    holding->vel = Vector2Scale(ep->look_dir, 1100);
+                    holding->spin_vel = PI*6.5f;
                     holding->friction = 1.0f;
                     holding->damage_amount = holding->gun.bullet_damage << 2;
-                    holding->life_time_duration = 0.7f;
+                    holding->life_time_duration = 0.23f;
                     holding->apply_collision_mask =
                       ENTITY_KIND_MASK_RAPTOR |
                       0;

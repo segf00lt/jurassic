@@ -7,7 +7,7 @@ etc/
 *.o
 a.out
 *.dylib
-bullet_hell
+jurassic
 metaprogram
 .DS_Store
 .vscode
