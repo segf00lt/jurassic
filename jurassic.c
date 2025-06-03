@@ -37,6 +37,9 @@
 #define TILE_COLS 256
 #define TILES_COUNT (TILE_ROWS*TILE_COLS)
 #define MAX_STATIC_ENTITIES 256
+#define MAP_WIDTH ((float)TILE_SIZE*TILE_COLS+TILE_SIZE)
+#define MAP_HEIGHT ((float)TILE_SIZE*TILE_ROWS+TILE_SIZE)
+#define MAP_RECT ((Rectangle){ 0, 0, MAP_WIDTH, MAP_HEIGHT })
 
 #define BLOOD ((Color){ 255, 0, 0, 255 })
 
@@ -182,6 +185,21 @@
   X(GREEN)                  \
   X(BLUE)                   \
   X(YELLOW)                 \
+
+#define EDITOR_TOOLS     \
+  X(PLACE_WALL)          \
+  X(PLACE_FLOOR)         \
+  X(PLACE_DOOR)          \
+  X(PLACE_ENTITY_1)      \
+  X(PLACE_ENTITY_2)      \
+  X(PLACE_ENTITY_3)      \
+  X(PLACE_ENTITY_4)      \
+
+#define TILE_KINDS       \
+  X(WALL)                \
+  X(FLOOR)               \
+  X(RED_DOOR)            \
+
 
 
 /*
@@ -388,7 +406,7 @@ typedef enum Key_kind {
     KEY_KIND_MAX,
 } Key_kind;
 
-#define X(kind) const Key_kind_mask KEY_KIND_MASK_##kind = (Key_kind_mask)(1ull<<KEY_KIND_##kind);
+#define X(kind) const Key_kind_mask KEY_KIND_MASK_##kind = (Key_kind_mask)(1u<<KEY_KIND_##kind);
 KEY_KINDS
 #undef X
 
@@ -399,6 +417,41 @@ char *Key_kind_strings[KEY_KIND_MAX] = {
 };
 
 STATIC_ASSERT(KEY_KIND_MAX < 32, number_of_entity_kinds_is_less_than_32);
+
+typedef enum Editor_tool {
+  EDITOR_TOOL_INVALID = -1,
+#define X(tool) EDITOR_TOOL_##tool,
+  EDITOR_TOOLS
+#undef X
+    EDITOR_TOOLS_MAX
+} Editor_tool;
+
+char *Editor_tool_strings[EDITOR_TOOLS_MAX] = {
+#define X(tool) #tool,
+  EDITOR_TOOLS
+#undef X
+};
+
+typedef u32 Tile_kind_mask;
+typedef u8 Tile_kind;
+enum {
+  TILE_KIND_NONE = 0,
+#define X(kind) TILE_KIND_##kind,
+  TILE_KINDS
+#undef X
+    TILE_KIND_MAX
+} ;
+
+char *Tile_kind_strings[TILE_KIND_MAX] = {
+  "NONE",
+#define X(kind) #kind,
+  TILE_KINDS
+#undef X
+};
+
+#define X(kind) const Tile_kind_mask TILE_KIND_MASK_##kind = (Tile_kind_mask)(1ull<<TILE_KIND_##kind);
+TILE_KINDS
+#undef X
 
 DECL_ARR_TYPE(Entity_ptr);
 DECL_SLICE_TYPE(Entity_ptr);
@@ -602,7 +655,6 @@ struct Entity {
   Entity_interact_proc interact_proc;
   Entity_drop_proc drop_proc;
 
-  // TODO sprite offset
   Sprite  sprite;
   f32     sprite_scale;
   f32     sprite_rotation;
@@ -633,6 +685,7 @@ struct Map_data {
 
 // TODO level editor
 struct Editor {
+  Editor_tool tool;
   u8 *tiles;
   Arr_Entity static_entities;
 };
@@ -649,6 +702,8 @@ struct Game {
   Game_debug_flags debug_flags;
 
   Input_flags input_flags;
+  int key_pressed;
+  char character_pressed;
 
   u64 frame_index;
 
@@ -855,6 +910,11 @@ const Entity_kind_mask ENEMY_KIND_MASK =
 ENTITY_KIND_MASK_RAPTOR |
 ENTITY_KIND_MASK_BOSS   |
 ENTITY_KIND_MASK_PARENT |
+0;
+
+const Tile_kind_mask COLLIDABLE_TILE_MASK =
+TILE_KIND_MASK_WALL |
+TILE_KIND_MASK_RED_DOOR |
 0;
 
 const float TYPING_SPEED   = 0.055f;
@@ -1675,26 +1735,26 @@ void entity_emit_particles(Game *gp, Entity *ep) {
       } break;
     case PARTICLE_EMITTER_SPARKS:
       {
-        n_particles = GetRandomValue(20, 25);
+        n_particles = GetRandomValue(2, 10);
         ASSERT(n_particles <= MAX_PARTICLES);
 
         for(int i = 0; i < n_particles; i++) {
           Particle *p = buf + i;
           *p = (Particle){0};
 
-          p->lifetime = get_random_float(TARGET_FRAME_TIME * 10, TARGET_FRAME_TIME * 20, 10);
+          p->lifetime = get_random_float(TARGET_FRAME_TIME * 17, TARGET_FRAME_TIME * 20, 3);
 
           p->pos = ep->pos;
           p->vel =
             Vector2Rotate(Vector2Normalize(Vector2Negate(ep->vel)),
-                get_random_float(-PI*0.37f, PI*0.37f, 200));
+                get_random_float(-PI*0.4f, PI*0.4f, 1000));
 
-          p->vel = Vector2Scale(p->vel, (float)GetRandomValue(1500, 1800));
+          p->vel = Vector2Scale(p->vel, (float)GetRandomValue(600, 900));
 
-          p->radius = get_random_float(2.0f, 3.2f, 4);
-          p->shrink = 12.3f;
+          p->radius = get_random_float(0.3f, 0.7f, 4);
+          p->shrink = (1.1*p->radius)/p->lifetime;
 
-          p->friction = (float)GetRandomValue(0, 20);
+          p->friction = (float)GetRandomValue(0, 5);
 
           p->begin_tint = (Color){ 255, 188, 3, 255 };
           p->end_tint = ColorAlpha(p->begin_tint, 0.83);
@@ -2164,6 +2224,7 @@ void draw_sprite(Game *gp, Entity *ep) {
 
 Game* game_init(void) {
 
+  SetRandomSeed(42);
   SetConfigFlags(FLAG_WINDOW_RESIZABLE);
   InitWindow(1000, 800, GAME_TITLE);
   InitAudioDevice();
@@ -2303,6 +2364,8 @@ void game_level_end(Game *gp) {
 void game_editor_save_and_close(Game *gp) {
   memory_copy(gp->tiles, gp->editor.tiles, sizeof(u8) * TILES_COUNT);
 
+  gp->cam.target = gp->player->pos;
+  gp->cam.zoom = INITIAL_CAMERA_ZOOM;
   gp->debug_flags &= ~EDITOR_GAME_DEBUG_FLAGS_MASK;
 }
 
@@ -2313,8 +2376,8 @@ void game_editor_open(Game *gp) {
 
 force_inline s64 tile_from_point(Vector2 p) {
 
-  s64 col = Clamp((s64)(p.x * INV_TILE_SIZE), 0, TILE_COLS);
-  s64 row = Clamp((s64)(p.y * INV_TILE_SIZE), 0, TILE_ROWS);
+  s64 col = Clamp((s64)(p.x * INV_TILE_SIZE), 0, MAP_WIDTH);
+  s64 row = Clamp((s64)(p.y * INV_TILE_SIZE), 0, MAP_HEIGHT);
 
   s64 tile = col + row * TILE_COLS;
 
@@ -2563,6 +2626,8 @@ void game_update_and_draw(Game *gp) {
 #endif
 
     int key = GetCharPressed();
+    gp->key_pressed = key;
+    gp->character_pressed = key;
     if(key != 0) {
       gp->input_flags |= INPUT_FLAG_ANY;
     }
@@ -2776,11 +2841,25 @@ void game_update_and_draw(Game *gp) {
     if(gp->debug_flags & GAME_DEBUG_FLAG_EDITOR) {
 
       if(IsKeyDown(KEY_LEFT_CONTROL)) {
-        float offset_x = -45*GetMouseWheelMoveV().y;
+        float offset_x = -120*GetMouseWheelMoveV().y/gp->cam.zoom;
         gp->cam.target.x += offset_x;
       } else if(IsKeyDown(KEY_LEFT_SHIFT)) {
-        float offset_y = -45*GetMouseWheelMoveV().y;
+        float offset_y = -120*GetMouseWheelMoveV().y/gp->cam.zoom;
         gp->cam.target.y += offset_y;
+      } else if(IsKeyDown(KEY_LEFT_ALT)) {
+        float y = GetMouseWheelMoveV().y;
+        if(y > 0) {
+          gp->editor.tool--;
+          if(gp->editor.tool < 0) {
+            gp->editor.tool = EDITOR_TOOLS_MAX-1;
+          }
+        } else if(y < 0) {
+          gp->editor.tool++;
+          if(gp->editor.tool >= EDITOR_TOOLS_MAX) {
+            gp->editor.tool = 0;
+          }
+        }
+
       } else {
         float adjust_zoom = 0.4f*GetMouseWheelMoveV().y;
 
@@ -2793,20 +2872,108 @@ void game_update_and_draw(Game *gp) {
         gp->cam.zoom = INITIAL_CAMERA_ZOOM;
       }
 
+      Vector2 p = GetMousePositionWorld2D(gp->cam);
+      s64 tile = tile_from_point(p);
+      //Vector2 tile_mid_point = Vector2AddValue(point_from_tile(tile), (float)TILE_SIZE*0.5f);
+
+      bool place_something = false;
+      bool delete_something = false;
+      //bool no_grid_snap = false;
+
       if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-        Vector2 p = GetMousePositionWorld2D(gp->cam);
-        s64 tile = tile_from_point(p);
-        ASSERT(tile >= 0 && tile <= TILES_COUNT);
-        gp->editor.tiles[tile] = 1;
+        place_something = true;
       } else if(IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-        Vector2 p = GetMousePositionWorld2D(gp->cam);
-        s64 tile = tile_from_point(p);
-        ASSERT(tile >= 0 && tile <= TILES_COUNT);
-        gp->editor.tiles[tile] = 0;
-      } else if(IsMouseButtonDown(MOUSE_MIDDLE_BUTTON)) {
+        delete_something = true;
+      }
+
+      if(IsMouseButtonDown(MOUSE_MIDDLE_BUTTON)) {
+
         gp->cam.target =
           Vector2Subtract(gp->cam.target,
               Vector2Scale(GetMouseDelta(), 1.0f/gp->cam.zoom));
+
+      }
+
+      if(place_something || delete_something) {
+
+        //if(IsKeyDown(KEY_LEFT_SHIFT)) {
+        //  no_grid_snap = true;
+        //}
+
+        switch(gp->editor.tool) {
+          default:
+            UNREACHABLE;
+          case EDITOR_TOOL_PLACE_WALL:
+            {
+              if(place_something) {
+
+                ASSERT(tile >= 0 && tile <= TILES_COUNT);
+                gp->editor.tiles[tile] = TILE_KIND_WALL;
+
+              } else {
+
+                ASSERT(tile >= 0 && tile <= TILES_COUNT);
+                gp->editor.tiles[tile] = TILE_KIND_NONE;
+
+              }
+            } break;
+          case EDITOR_TOOL_PLACE_FLOOR:
+            {
+              if(place_something) {
+
+                ASSERT(tile >= 0 && tile <= TILES_COUNT);
+                gp->editor.tiles[tile] = TILE_KIND_FLOOR;
+
+              } else {
+
+                ASSERT(tile >= 0 && tile <= TILES_COUNT);
+                gp->editor.tiles[tile] = TILE_KIND_NONE;
+
+              }
+            } break;
+          case EDITOR_TOOL_PLACE_DOOR:
+            {
+              if(place_something) {
+
+                ASSERT(tile >= 0 && tile <= TILES_COUNT);
+                gp->editor.tiles[tile] = TILE_KIND_RED_DOOR;
+
+              } else {
+
+                ASSERT(tile >= 0 && tile <= TILES_COUNT);
+                gp->editor.tiles[tile] = TILE_KIND_NONE;
+
+              }
+            } break;
+          case EDITOR_TOOL_PLACE_ENTITY_1:
+            {
+              //Vector2 dest = no_grid_snap ? p : tile_mid_point;
+              //if(place_something) {
+              //} else {
+              //}
+            } break;
+          case EDITOR_TOOL_PLACE_ENTITY_2:
+            {
+              //Vector2 dest = no_grid_snap ? p : tile_mid_point;
+              //if(place_something) {
+              //} else {
+              //}
+            } break;
+          case EDITOR_TOOL_PLACE_ENTITY_3:
+            {
+              //Vector2 dest = no_grid_snap ? p : tile_mid_point;
+              //if(place_something) {
+              //} else {
+              //}
+            } break;
+          case EDITOR_TOOL_PLACE_ENTITY_4:
+            {
+              //Vector2 dest = no_grid_snap ? p : tile_mid_point;
+              //if(place_something) {
+              //} else {
+              //}
+            } break;
+        }
       }
 
       goto update_end;
@@ -3102,17 +3269,17 @@ void game_update_and_draw(Game *gp) {
               for(s64 j = begin_col; j <= end_col; j++) {
                 s64 tile = j + i * TILE_COLS;
 
-                if(tiles[tile] > 0) {
+                if((1ull<<tiles[tile]) & COLLIDABLE_TILE_MASK) {
 
                   Vector2 tile_origin_point = point_from_tile(tile);
                   tile_origin_point = Vector2SubtractValue(tile_origin_point, radius);
                   float tile_grown_size = TILE_SIZE + TIMES2(radius);
 
                   bool skip[4] = {
-                    tiles[j + (s64)Clamp(i-1, 0, TILE_ROWS)*TILE_COLS] > 0,
-                    tiles[(s64)Clamp(j+1, 0, TILE_COLS) + i*TILE_COLS] > 0,
-                    tiles[j + (s64)Clamp(i+1, 0, TILE_ROWS)*TILE_COLS] > 0,
-                    tiles[(s64)Clamp(j-1, 0, TILE_COLS) + i*TILE_COLS] > 0,
+                    (1ull<<tiles[j + (s64)Clamp(i-1, 0, TILE_ROWS)*TILE_COLS]) & COLLIDABLE_TILE_MASK,
+                    (1ull<<tiles[(s64)Clamp(j+1, 0, TILE_COLS) + i*TILE_COLS]) & COLLIDABLE_TILE_MASK,
+                    (1ull<<tiles[j + (s64)Clamp(i+1, 0, TILE_ROWS)*TILE_COLS]) & COLLIDABLE_TILE_MASK,
+                    (1ull<<tiles[(s64)Clamp(j-1, 0, TILE_COLS) + i*TILE_COLS]) & COLLIDABLE_TILE_MASK,
                   };
 
                   Vector2 tile_points[5] = {
@@ -3141,6 +3308,15 @@ void game_update_and_draw(Game *gp) {
                         collisions_count++;
 
                         if(ep->flags & ENTITY_FLAG_BOUNCE_OFF_TILES) {
+                          if(manifold.segment_is_horizontal) {
+                            ep->vel.y *= -1;
+                            ep->pos.y = manifold.contact.y;
+                          } else if(manifold.segment_is_vertical) {
+                            ep->vel.x *= -1;
+                            ep->pos.x = manifold.contact.x;
+                          } else { /* corner case... literally */
+                            UNREACHABLE;
+                          }
                         } else {
                           if(manifold.segment_is_horizontal) {
                             ep->vel.y = 0;
@@ -3149,6 +3325,7 @@ void game_update_and_draw(Game *gp) {
                             ep->vel.x = 0;
                             ep->pos.x = manifold.contact.x;
                           } else { /* corner case... literally */
+                            UNREACHABLE;
                           }
                         }
 
@@ -3171,7 +3348,7 @@ void game_update_and_draw(Game *gp) {
 
           if(ep->flags & ENTITY_FLAG_DISCRETE_TILE_COLLISION) {
             s64 tile = tile_from_point(ep->pos);
-            if(gp->tiles[tile] > 0) {
+            if((1ull<<gp->tiles[tile]) & COLLIDABLE_TILE_MASK) {
               if(ep->flags & ENTITY_FLAG_DIE_ON_TILE_COLLISION) {
                 ep->flags |= ENTITY_FLAG_DIE_NOW;
               }
@@ -3462,28 +3639,71 @@ update_end:;
         DrawTextureRec(gp->debug_background, rec, pos, ColorAlpha(WHITE, 0.3f));
       }
 
+      u8 *tiles = gp->tiles;
+      if(gp->debug_flags & GAME_DEBUG_FLAG_EDITOR) {
+        tiles = gp->editor.tiles;
+      }
+
+      for(s64 i = 0; i < TILES_COUNT; i++) {
+        switch(tiles[i]) {
+          case TILE_KIND_WALL:
+            {
+              Vector2 tile_point = point_from_tile(i);
+
+              {
+                Rectangle rec =
+                {
+                  .x = tile_point.x,
+                  .y = tile_point.y,
+                  .width = TILE_SIZE,
+                  .height = TILE_SIZE,
+                };
+
+                DrawRectangleRec(rec, SKYBLUE);
+              }
+
+            } break;
+          case TILE_KIND_FLOOR:
+            {
+              Vector2 tile_point = point_from_tile(i);
+
+              {
+                Rectangle rec =
+                {
+                  .x = tile_point.x,
+                  .y = tile_point.y,
+                  .width = TILE_SIZE,
+                  .height = TILE_SIZE,
+                };
+
+                DrawRectangleRec(rec, GRAY);
+              }
+
+            } break;
+          case TILE_KIND_RED_DOOR:
+            {
+              Vector2 tile_point = point_from_tile(i);
+
+              {
+                Rectangle rec =
+                {
+                  .x = tile_point.x,
+                  .y = tile_point.y,
+                  .width = TILE_SIZE,
+                  .height = TILE_SIZE,
+                };
+
+                DrawRectangleRec(rec, RED);
+              }
+
+            } break;
+        }
+      }
+
+
       if(gp->debug_flags & GAME_DEBUG_FLAG_EDITOR) {
 
-        Editor *editor = &gp->editor;
-
-        for(s64 i = 0; i < TILES_COUNT; i++) {
-          if(editor->tiles[i]) {
-            Vector2 tile_point = point_from_tile(i);
-
-            {
-              Rectangle rec =
-              {
-                .x = tile_point.x,
-                .y = tile_point.y,
-                .width = TILE_SIZE,
-                .height = TILE_SIZE,
-              };
-
-              DrawRectangleRec(rec, SKYBLUE);
-            }
-
-          }
-        }
+        //Editor *editor = &gp->editor;
 
         Vector2 p = GetMousePositionWorld2D(gp->cam);
 
@@ -3501,27 +3721,17 @@ update_end:;
           DrawRectangleRec(rec, ColorAlpha(ORANGE, 0.7));
         }
 
+        {
+          float scale = 2.0;
+          if(gp->cam.zoom < 1.0) {
+            scale *= 1.0f/gp->cam.zoom;
+          }
+          DrawRectangleLinesEx(MAP_RECT, scale, PINK);
+        }
+
         DrawGrid2D(1000, TILE_SIZE);
 
       } else {
-        for(s64 i = 0; i < TILES_COUNT; i++) {
-          if(gp->tiles[i]) {
-            Vector2 tile_point = point_from_tile(i);
-
-            {
-              Rectangle rec =
-              {
-                .x = tile_point.x,
-                .y = tile_point.y,
-                .width = TILE_SIZE,
-                .height = TILE_SIZE,
-              };
-
-              DrawRectangleRec(rec, SKYBLUE);
-            }
-
-          }
-        }
 
       }
 
@@ -3665,6 +3875,7 @@ update_end:;
         "player pos: { x = %.1f, y = %.1f }\n"
         "level: %i\n"
         "phase: %i\n"
+        "editor tool: %s\n"
         "game state: %s";
       stbsp_sprintf(debug_text,
           debug_text_fmt,
@@ -3684,9 +3895,10 @@ update_end:;
           gp->player ? gp->player->pos.y : 0,
           gp->level+1,
           gp->phase_index+1,
+          Editor_tool_strings[gp->editor.tool],
           Game_state_strings[gp->state]);
-      Vector2 debug_text_size = MeasureTextEx(gp->font, debug_text, 18, 1.0);
-      DrawText(debug_text, 10, GetScreenHeight() - debug_text_size.y - 10, 18, GREEN);
+      Vector2 debug_text_size = MeasureTextEx(gp->font, debug_text, 20, 1.0);
+      DrawText(debug_text, 10, GetScreenHeight() - debug_text_size.y - 10, 20, GREEN);
     } /* debug overlay */
 #endif
 
