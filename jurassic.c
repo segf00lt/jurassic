@@ -36,11 +36,14 @@
 #define TILE_ROWS 256
 #define TILE_COLS 256
 #define TILES_COUNT (TILE_ROWS*TILE_COLS)
+#define MAX_STATIC_ENTITIES 256
 
 #define BLOOD ((Color){ 255, 0, 0, 255 })
 
 #define INITIAL_CAMERA_ZOOM ((float)3.0f)
 #define DEFAULT_CAMERA_TARGET ((Vector2){ 400, 400 })
+
+#define SKIN ((float)0.001f)
 
 
 /*
@@ -56,7 +59,6 @@
   X(MAIN_LOOP)                  \
   X(VICTORY)                    \
   X(DEBUG_SANDBOX)              \
-  X(EDITOR)                     \
 
 #define GAME_DEBUG_FLAGS       \
   X(DEBUG_UI)                  \
@@ -66,6 +68,7 @@
   X(SKIP_TRANSITIONS)          \
   X(MUTE)                      \
   X(FREE_CAM)                  \
+  X(EDITOR)                    \
 
 #define GAME_FLAGS         \
   X(PAUSE)                 \
@@ -93,6 +96,8 @@
   X(PARENT)                    \
   X(PLAYER_BULLET)             \
   X(RAPTOR)                    \
+  X(KEY)                       \
+  X(DOOR)                      \
   X(HEALTH_PACK)               \
   X(SHOTGUN)                   \
   X(ASSAULT_RIFLE)             \
@@ -107,6 +112,9 @@
 #define ENTITY_FLAGS                 \
   X(DYNAMICS)                        \
   X(SPINNING)                        \
+  X(CONTINUOUS_TILE_COLLISION)       \
+  X(DISCRETE_TILE_COLLISION)         \
+  X(BOUNCE_OFF_TILES)                \
   X(HAS_SPRITE)                      \
   X(MANUAL_SPRITE_ORIGIN)            \
   X(APPLY_FRICTION)                  \
@@ -116,6 +124,7 @@
   X(ON_SCREEN)                       \
   X(DIE_IF_CHILD_LIST_EMPTY)         \
   X(DIE_NOW)                         \
+  X(DIE_ON_TILE_COLLISION)           \
   X(INTERACT)                        \
   X(IS_INTERACTABLE)                 \
   X(HAS_LIFETIME)                    \
@@ -168,6 +177,12 @@
   X(AUTOMATIC)                      \
   X(SPIN_WITH_SINE)                 \
 
+#define KEY_KINDS           \
+  X(RED)                    \
+  X(GREEN)                  \
+  X(BLUE)                   \
+  X(YELLOW)                 \
+
 
 /*
  * macros
@@ -182,6 +197,7 @@
 
 typedef struct Game Game;
 typedef struct Map_data Map_data;
+typedef struct Collision_manifold Collision_manifold;
 typedef struct Editor Editor;
 typedef struct Entity Entity;
 typedef Entity* Entity_ptr;
@@ -195,6 +211,7 @@ typedef u64 Gun_flags;
 typedef u64 Input_flags;
 typedef u64 Entity_flags;
 typedef u64 Entity_kind_mask;
+typedef u32 Key_kind_mask;
 typedef u32 Particle_flags;
 typedef struct Entity_handle Entity_handle;
 typedef struct Entity_node Entity_node;
@@ -363,6 +380,26 @@ STATIC_ASSERT(GUN_FLAG_INDEX_MAX < 64, number_of_bullet_emitter_flags_is_less_th
 GUN_FLAGS
 #undef X
 
+typedef enum Key_kind {
+  KEY_KIND_INVALID = -1,
+#define X(kind) KEY_KIND_##kind,
+  KEY_KINDS
+#undef X
+    KEY_KIND_MAX,
+} Key_kind;
+
+#define X(kind) const Key_kind_mask KEY_KIND_MASK_##kind = (Key_kind_mask)(1ull<<KEY_KIND_##kind);
+KEY_KINDS
+#undef X
+
+char *Key_kind_strings[KEY_KIND_MAX] = {
+#define X(kind) #kind,
+  KEY_KINDS
+#undef X
+};
+
+STATIC_ASSERT(KEY_KIND_MAX < 32, number_of_entity_kinds_is_less_than_32);
+
 DECL_ARR_TYPE(Entity_ptr);
 DECL_SLICE_TYPE(Entity_ptr);
 DECL_ARR_TYPE(Rectangle);
@@ -375,6 +412,18 @@ DECL_SLICE_TYPE(Entity);
 /*
  * struct bodies
  */
+
+struct Collision_manifold {
+  b64 collided;
+  Vector2 contact;
+  Vector2 delta;
+  Vector2 dir;
+  Vector2 normal;
+  b32 segment_is_horizontal;
+  b32 segment_is_vertical;
+  f32 t;
+  f32 u;
+};
 
 struct Particle {
   Particle_flags flags;
@@ -546,6 +595,8 @@ struct Entity {
 
   Vector2 being_held_offset;
 
+  Key_kind key_kind;
+
   Entity_kind_mask apply_collision_mask;
   Entity_collide_proc collide_proc;
   Entity_interact_proc interact_proc;
@@ -576,7 +627,8 @@ struct Entity {
 };
 
 struct Map_data {
-  Slice_u8 tiles;
+  u8 tiles[TILES_COUNT];
+  Entity static_entities[MAX_STATIC_ENTITIES];
 };
 
 // TODO level editor
@@ -648,6 +700,8 @@ struct Game {
 
   s16 phase_index;
 
+  Key_kind_mask keys;
+
 #if 0
   struct {
     u32 flags;
@@ -683,6 +737,7 @@ struct Game {
   f32 music_pos;
 
   Editor editor;
+  u8 *tiles;
 
 };
 
@@ -692,6 +747,7 @@ struct Game {
  */
 
 float get_random_float(float min, float max, int steps);
+Collision_manifold tile_segment_intersect(Vector2 p1, Vector2 p2, Vector2 p3, Vector2 p4);
 
 Game* game_init(void);
 void game_load_assets(Game *gp);
@@ -701,6 +757,9 @@ void game_close(Game *gp);
 void game_reset(Game *gp);
 void game_main_loop(Game *gp);
 void game_level_end(Game *gp);
+
+void game_editor_save_and_close(Game *gp);
+void game_editor_open(Game *gp);
 
 void camera_shake(Game *gp, float duration, float magnitude);
 void camera_pulsate(Game *gp, float duration, float magnitude);
@@ -753,6 +812,7 @@ b32 sprite_equals(Sprite a, Sprite b);
 
 s64 tile_from_point(Vector2 p);
 Vector2 point_from_tile(s64 tile);
+void row_col_from_tile(s64 tile, s64 *row, s64 *col);
 
 
 /*
@@ -781,6 +841,8 @@ const Entity_flags DEFAULT_BULLET_FLAGS =
 ENTITY_FLAG_APPLY_COLLISION |
 ENTITY_FLAG_APPLY_COLLISION_DAMAGE |
 ENTITY_FLAG_DIE_ON_APPLY_COLLISION |
+ENTITY_FLAG_DISCRETE_TILE_COLLISION |
+ENTITY_FLAG_DIE_ON_TILE_COLLISION |
 ENTITY_FLAG_DYNAMICS |
 0;
 
@@ -811,6 +873,10 @@ const Color MY_GOLD = { 13, 88, 20, 255 };
 const Color MILITARY_GREEN = { 50, 60, 57 , 255 };
 const Color MUSTARD = { 234, 200, 0, 255 };
 
+const Game_debug_flags EDITOR_GAME_DEBUG_FLAGS_MASK =
+GAME_DEBUG_FLAG_EDITOR   |
+GAME_DEBUG_FLAG_FREE_CAM |
+0;
 
 
 /*
@@ -1052,6 +1118,7 @@ Entity* spawn_player(Game *gp) {
 
   ep->flags =
     ENTITY_FLAG_DYNAMICS |
+    ENTITY_FLAG_CONTINUOUS_TILE_COLLISION |
     ENTITY_FLAG_APPLY_FRICTION |
     ENTITY_FLAG_HAS_SPRITE |
     ENTITY_FLAG_HAS_GUN |
@@ -2122,6 +2189,8 @@ Game* game_init(void) {
   gp->editor.tiles = push_array(gp->main_arena, u8, TILES_COUNT);
   arr_init_ex(gp->editor.static_entities, gp->main_arena, 64);
 
+  gp->tiles = push_array(gp->main_arena, u8, TILES_COUNT);
+
   gp->cam =
     (Camera2D) {
       .zoom = INITIAL_CAMERA_ZOOM,
@@ -2231,7 +2300,18 @@ void game_level_end(Game *gp) {
   gp->flags |= GAME_FLAG_PLAYER_CANNOT_SHOOT;
 }
 
-s64 tile_from_point(Vector2 p) {
+void game_editor_save_and_close(Game *gp) {
+  memory_copy(gp->tiles, gp->editor.tiles, sizeof(u8) * TILES_COUNT);
+
+  gp->debug_flags &= ~EDITOR_GAME_DEBUG_FLAGS_MASK;
+}
+
+void game_editor_open(Game *gp) {
+  gp->debug_flags |= EDITOR_GAME_DEBUG_FLAGS_MASK;
+
+}
+
+force_inline s64 tile_from_point(Vector2 p) {
 
   s64 col = Clamp((s64)(p.x * INV_TILE_SIZE), 0, TILE_COLS);
   s64 row = Clamp((s64)(p.y * INV_TILE_SIZE), 0, TILE_ROWS);
@@ -2242,7 +2322,7 @@ s64 tile_from_point(Vector2 p) {
 
 }
 
-Vector2 point_from_tile(s64 tile) {
+force_inline Vector2 point_from_tile(s64 tile) {
 
   s64 col = tile % TILE_ROWS;
   s64 row = tile / TILE_ROWS;
@@ -2254,6 +2334,89 @@ Vector2 point_from_tile(s64 tile) {
   };
 
   return p;
+}
+
+force_inline void row_col_from_tile(s64 tile, s64 *row, s64 *col) {
+  ASSERT(row);
+  ASSERT(col);
+
+  *col = tile % TILE_ROWS;
+  *row = tile / TILE_ROWS;
+}
+
+Collision_manifold tile_segment_intersect(Vector2 p1, Vector2 p2, Vector2 p3, Vector2 p4) {
+  float numerator_t = 0, numerator_u = 0, denominator = 0;
+
+  float p12x = p1.x - p2.x;
+  float p12y = p1.y - p2.y;
+  float p34x = p3.x - p4.x;
+  float p34y = p3.y - p4.y;
+  float p13x = p1.x - p3.x;
+  float p13y = p1.y - p3.y;
+
+  denominator = p12x*p34y - p12y*p34x;
+  denominator = 1/denominator;
+
+  numerator_t = p13x * p34y - p13y * p34x;
+  numerator_u = p13x * p12y - p13y * p12x;
+
+  float t = numerator_t * denominator;
+  float u = numerator_u * denominator;
+
+  Vector2 contact = (Vector2){ p1.x - t*p12x, p1.y - t*p12y };
+
+  b32 collided = !!((0.0 <= t && t <= 1.0) && (0.0 <= u && u <= 1.0));
+
+  Vector2 delta = { -p12x, -p12y };
+  Vector2 dir = {0};
+  Vector2 normal = {0};
+  b32 segment_is_horizontal = 0;
+  b32 segment_is_vertical = 0;
+
+  if(collided) {
+    if(FloatEquals(p34x, 0)) {
+      if(p34y < 0) {
+        dir = (Vector2){ 0, 1 };
+        normal = (Vector2){ 1, 0 };
+        segment_is_vertical = 1;
+      } else if(p34y > 0) {
+        dir = (Vector2){ 0, -1 };
+        normal = (Vector2){ -1, 0 };
+        segment_is_vertical = 1;
+      } else {
+        UNREACHABLE;
+      }
+    }
+
+    if(FloatEquals(p34y, 0)) {
+      if(p34x < 0) {
+        dir = (Vector2){ -1, 0 };
+        normal = (Vector2){ 0, -1 };
+        segment_is_horizontal = 1;
+      } else if(p34x > 0) {
+        dir = (Vector2){ 1, 0 };
+        normal = (Vector2){ 0, 1 };
+        segment_is_horizontal = 1;
+      } else {
+        UNREACHABLE;
+      }
+    }
+  }
+
+  Collision_manifold result =
+  {
+    .collided = collided,
+    .contact = contact,
+    .delta = delta,
+    .dir = dir,
+    .normal = normal,
+    .segment_is_horizontal = segment_is_horizontal,
+    .segment_is_vertical = segment_is_vertical,
+    .t = t,
+    .u = u,
+  };
+
+  return result;
 }
 
 void game_main_loop(Game *gp) {
@@ -2379,6 +2542,14 @@ void game_update_and_draw(Game *gp) {
 
     if(IsKeyPressed(KEY_F11)) {
       gp->debug_flags  ^= GAME_DEBUG_FLAG_DEBUG_UI;
+    }
+
+    if(IsKeyPressed(KEY_F9)) {
+      if(gp->debug_flags & GAME_DEBUG_FLAG_EDITOR) {
+        game_editor_save_and_close(gp);
+      } else {
+        game_editor_open(gp);
+      }
     }
 
     if(IsKeyPressed(KEY_F10)) {
@@ -2595,58 +2766,53 @@ void game_update_and_draw(Game *gp) {
 
           } else {
 
-            gp->next_state = GAME_STATE_EDITOR;
-
           }
-
-        } break;
-      case GAME_STATE_EDITOR:
-        {
-
-          gp->debug_flags |=
-            GAME_DEBUG_FLAG_FREE_CAM |
-            0;
-
-
-          if(IsKeyDown(KEY_LEFT_SHIFT)) {
-            float offset_x = 45*GetMouseWheelMoveV().y;
-            gp->cam.target.x += offset_x;
-          } else if(IsKeyDown(KEY_LEFT_CONTROL)) {
-            float offset_y = 45*GetMouseWheelMoveV().y;
-            gp->cam.target.y += offset_y;
-          } else {
-            float adjust_zoom = 0.4f*GetMouseWheelMoveV().y;
-
-            if(gp->cam.zoom + adjust_zoom > 0.0) {
-              gp->cam.zoom += adjust_zoom;
-            }
-          }
-
-          if(IsKeyPressed(KEY_EQUAL)) {
-            gp->cam.zoom = INITIAL_CAMERA_ZOOM;
-          }
-
-          if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-            Vector2 p = GetMousePositionWorld2D(gp->cam);
-            s64 tile = tile_from_point(p);
-            ASSERT(tile >= 0 && tile <= TILES_COUNT);
-            gp->editor.tiles[tile] = 1;
-          } else if(IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-            Vector2 p = GetMousePositionWorld2D(gp->cam);
-            s64 tile = tile_from_point(p);
-            ASSERT(tile >= 0 && tile <= TILES_COUNT);
-            gp->editor.tiles[tile] = 0;
-          } else if(IsMouseButtonDown(MOUSE_MIDDLE_BUTTON)) {
-            gp->cam.target =
-              Vector2Subtract(gp->cam.target,
-                  Vector2Scale(GetMouseDelta(), 0.4f));
-          }
-
-          goto update_end;
 
         } break;
 #endif
     }
+
+#ifdef DEBUG
+    if(gp->debug_flags & GAME_DEBUG_FLAG_EDITOR) {
+
+      if(IsKeyDown(KEY_LEFT_CONTROL)) {
+        float offset_x = -45*GetMouseWheelMoveV().y;
+        gp->cam.target.x += offset_x;
+      } else if(IsKeyDown(KEY_LEFT_SHIFT)) {
+        float offset_y = -45*GetMouseWheelMoveV().y;
+        gp->cam.target.y += offset_y;
+      } else {
+        float adjust_zoom = 0.4f*GetMouseWheelMoveV().y;
+
+        if(gp->cam.zoom + adjust_zoom > 0.0) {
+          gp->cam.zoom += adjust_zoom;
+        }
+      }
+
+      if(IsKeyPressed(KEY_EQUAL)) {
+        gp->cam.zoom = INITIAL_CAMERA_ZOOM;
+      }
+
+      if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        Vector2 p = GetMousePositionWorld2D(gp->cam);
+        s64 tile = tile_from_point(p);
+        ASSERT(tile >= 0 && tile <= TILES_COUNT);
+        gp->editor.tiles[tile] = 1;
+      } else if(IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        Vector2 p = GetMousePositionWorld2D(gp->cam);
+        s64 tile = tile_from_point(p);
+        ASSERT(tile >= 0 && tile <= TILES_COUNT);
+        gp->editor.tiles[tile] = 0;
+      } else if(IsMouseButtonDown(MOUSE_MIDDLE_BUTTON)) {
+        gp->cam.target =
+          Vector2Subtract(gp->cam.target,
+              Vector2Scale(GetMouseDelta(), 1.0f/gp->cam.zoom));
+      }
+
+      goto update_end;
+
+    }
+#endif
 
     gp->live_entities = 0;
     gp->live_enemies = 0;
@@ -2670,6 +2836,7 @@ void game_update_and_draw(Game *gp) {
           b8 applied_collision = 0;
           b8 is_on_screen = CheckCollisionCircleRec(ep->pos, ep->radius, WINDOW_RECT);
           b8 is_fully_on_screen = check_circle_all_inside_rec(ep->pos, ep->radius, WINDOW_RECT);
+          Vector2 old_pos = ep->pos;
 
           switch(ep->control) {
             default:
@@ -2793,6 +2960,8 @@ void game_update_and_draw(Game *gp) {
                     holding->flags ^=
                       ENTITY_FLAG_DYNAMICS |
                       ENTITY_FLAG_SPINNING |
+                      ENTITY_FLAG_DISCRETE_TILE_COLLISION |
+                      ENTITY_FLAG_DIE_ON_TILE_COLLISION |
                       ENTITY_FLAG_APPLY_FRICTION |
                       ENTITY_FLAG_APPLY_COLLISION_DAMAGE |
                       ENTITY_FLAG_DIE_ON_APPLY_COLLISION |
@@ -2895,6 +3064,118 @@ void game_update_and_draw(Game *gp) {
             float turn = ep->spin_vel * gp->dt;
             ep->look_angle += turn;
             //ep->look_dir = Vector2Rotate(ep->look_dir, turn);
+          }
+
+          if(ep->flags & ENTITY_FLAG_CONTINUOUS_TILE_COLLISION) {
+
+            Vector2 new_pos = ep->pos;
+            Vector2 delta = Vector2Subtract(new_pos, old_pos);
+
+            //Vector2 old_tile_pos = point_from_tile(tile_from_point(old_pos));
+            //Vector2 new_tile_pos = point_from_tile(tile_from_point(new_pos));
+
+            //Vector2 tile_offset = Vector2Subtract(new_tile_pos, old_tile_pos);
+
+            s64 old_tile = tile_from_point(old_pos);
+            s64 new_tile = tile_from_point(new_pos);
+
+            s64 old_row = 0;
+            s64 old_col = 0;
+            s64 new_row = 0;
+            s64 new_col = 0;
+
+            row_col_from_tile(old_tile, &old_row, &old_col);
+            row_col_from_tile(new_tile, &new_row, &new_col);
+
+            s64 begin_row = Clamp(MIN(old_row, new_row) - 1, 0, TILE_ROWS);
+            s64 begin_col = Clamp(MIN(old_col, new_col) - 1, 0, TILE_COLS);
+            s64 end_row   = Clamp(MAX(old_row, new_row) + 1, 0, TILE_ROWS);
+            s64 end_col   = Clamp(MAX(old_col, new_col) + 1, 0, TILE_COLS);
+
+            u8 *tiles = gp->tiles;
+
+            float radius = ep->radius;
+
+            int collisions_count = 0;
+
+            for(s64 i = begin_row; i <= end_row; i++) {
+              for(s64 j = begin_col; j <= end_col; j++) {
+                s64 tile = j + i * TILE_COLS;
+
+                if(tiles[tile] > 0) {
+
+                  Vector2 tile_origin_point = point_from_tile(tile);
+                  tile_origin_point = Vector2SubtractValue(tile_origin_point, radius);
+                  float tile_grown_size = TILE_SIZE + TIMES2(radius);
+
+                  bool skip[4] = {
+                    tiles[j + (s64)Clamp(i-1, 0, TILE_ROWS)*TILE_COLS] > 0,
+                    tiles[(s64)Clamp(j+1, 0, TILE_COLS) + i*TILE_COLS] > 0,
+                    tiles[j + (s64)Clamp(i+1, 0, TILE_ROWS)*TILE_COLS] > 0,
+                    tiles[(s64)Clamp(j-1, 0, TILE_COLS) + i*TILE_COLS] > 0,
+                  };
+
+                  Vector2 tile_points[5] = {
+                    tile_origin_point,
+                    { tile_origin_point.x + tile_grown_size, tile_origin_point.y },
+                    { tile_origin_point.x + tile_grown_size, tile_origin_point.y + tile_grown_size },
+                    { tile_origin_point.x, tile_origin_point.y + tile_grown_size },
+                    tile_origin_point,
+                  };
+
+                  /*
+                   *
+                   *    0
+                   * 3     1
+                   *    2
+                   *
+                   */
+
+                  for(int segment_i = 0; segment_i < 4; segment_i++) {
+                    if(skip[segment_i]) continue;
+
+                    Collision_manifold manifold = tile_segment_intersect(old_pos, new_pos, tile_points[segment_i], tile_points[segment_i+1]);
+
+                    if(manifold.collided) {
+                      if(Vector2DotProduct(delta, manifold.normal) < 0) {
+                        collisions_count++;
+
+                        if(ep->flags & ENTITY_FLAG_BOUNCE_OFF_TILES) {
+                        } else {
+                          if(manifold.segment_is_horizontal) {
+                            ep->vel.y = 0;
+                            ep->pos.y = manifold.contact.y;
+                          } else if(manifold.segment_is_vertical) {
+                            ep->vel.x = 0;
+                            ep->pos.x = manifold.contact.x;
+                          } else { /* corner case... literally */
+                          }
+                        }
+
+                        break;
+                      }
+                    }
+
+                  }
+
+                }
+
+              }
+
+              if(collisions_count >= 4) {
+                break;
+              }
+            }
+
+          }
+
+          if(ep->flags & ENTITY_FLAG_DISCRETE_TILE_COLLISION) {
+            s64 tile = tile_from_point(ep->pos);
+            if(gp->tiles[tile] > 0) {
+              if(ep->flags & ENTITY_FLAG_DIE_ON_TILE_COLLISION) {
+                ep->flags |= ENTITY_FLAG_DIE_NOW;
+              }
+            }
           }
 
           if(ep->flags & ENTITY_FLAG_HAS_GUN) {
@@ -3178,10 +3459,10 @@ update_end:;
           .x = 200, .y = 300,
         };
 
-        DrawTextureRec(gp->debug_background, rec, pos, WHITE);
+        DrawTextureRec(gp->debug_background, rec, pos, ColorAlpha(WHITE, 0.3f));
       }
 
-      if(gp->state == GAME_STATE_EDITOR) {
+      if(gp->debug_flags & GAME_DEBUG_FLAG_EDITOR) {
 
         Editor *editor = &gp->editor;
 
@@ -3221,6 +3502,26 @@ update_end:;
         }
 
         DrawGrid2D(1000, TILE_SIZE);
+
+      } else {
+        for(s64 i = 0; i < TILES_COUNT; i++) {
+          if(gp->tiles[i]) {
+            Vector2 tile_point = point_from_tile(i);
+
+            {
+              Rectangle rec =
+              {
+                .x = tile_point.x,
+                .y = tile_point.y,
+                .width = TILE_SIZE,
+                .height = TILE_SIZE,
+              };
+
+              DrawRectangleRec(rec, SKYBLUE);
+            }
+
+          }
+        }
 
       }
 
