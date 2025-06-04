@@ -37,7 +37,7 @@ int main(void) {
 
       WaitTime(0.17f);
       if(dlclose(module)) {
-        TraceLog(LOG_ERROR, "failed to reload module code");
+        TraceLog(LOG_ERROR, "failed to load module code: %s", dlerror());
         return 1;
       }
 

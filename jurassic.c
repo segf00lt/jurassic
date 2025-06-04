@@ -102,11 +102,7 @@
   X(KEY)                       \
   X(DOOR)                      \
   X(HEALTH_PACK)               \
-  X(SHOTGUN)                   \
-  X(ASSAULT_RIFLE)             \
-  X(GRENADE_LAUNCHER)          \
-  X(FLAMETHROWER)              \
-  X(BOSS)                      \
+  X(GUN)                       \
 
 #define ENTITY_ORDERS   \
   X(FIRST)              \
@@ -142,12 +138,13 @@
   X(EMIT_SPAWN_PARTICLES)            \
   X(EMIT_DEATH_PARTICLES)            \
   X(APPLY_EFFECT_TINT)               \
+  X(PLACED_BY_EDITOR)                \
 
 #define ENTITY_CONTROLS               \
   X(PLAYER)                           \
   X(FOLLOW_PARENT)                    \
   X(GUN_BEING_HELD)                   \
-  X(FOLLOW_PARENT_CHAIN)              \
+  X(GUN_ON_GROUND)                    \
   X(COPY_PARENT)                      \
   X(GOTO_WAYPOINT)                    \
 
@@ -173,6 +170,7 @@
   X(FLAMETHROWER)                   \
 
 #define GUN_FLAGS                   \
+  X(JAMMED)                         \
   X(MANUALLY_SET_DIR)               \
   X(LOOK_AT_PLAYER)                 \
   X(USE_POINT_BAG)                  \
@@ -186,14 +184,16 @@
   X(BLUE)                   \
   X(YELLOW)                 \
 
-#define EDITOR_TOOLS     \
-  X(PLACE_WALL)          \
-  X(PLACE_FLOOR)         \
-  X(PLACE_DOOR)          \
-  X(PLACE_ENTITY_1)      \
-  X(PLACE_ENTITY_2)      \
-  X(PLACE_ENTITY_3)      \
-  X(PLACE_ENTITY_4)      \
+#define EDITOR_FLAGS        \
+  X(NO_GRID_SNAP)           \
+
+#define EDITOR_TOOLS          \
+  X(WALL)                     \
+  X(FLOOR)                    \
+  X(DOOR)                     \
+  X(SHOTGUN_SPAWNER)          \
+  X(ASSAULT_RIFLE_SPAWNER)    \
+  X(IGNORE)                   \
 
 #define TILE_KINDS       \
   X(WALL)                \
@@ -217,6 +217,7 @@ typedef struct Game Game;
 typedef struct Map_data Map_data;
 typedef struct Collision_manifold Collision_manifold;
 typedef struct Editor Editor;
+typedef u64 Editor_flags;
 typedef struct Entity Entity;
 typedef Entity* Entity_ptr;
 typedef struct Particle Particle;
@@ -418,15 +419,29 @@ char *Key_kind_strings[KEY_KIND_MAX] = {
 
 STATIC_ASSERT(KEY_KIND_MAX < 32, number_of_entity_kinds_is_less_than_32);
 
+typedef enum Editor_flag_index {
+  EDITOR_FLAG_INDEX_INVALID = -1,
+#define X(flag) EDITOR_FLAG_INDEX_##flag,
+  EDITOR_FLAGS
+#undef X
+    EDITOR_FLAG_INDEX_MAX,
+} Editor_flag_index;
+
+#define X(flag) const Editor_flags EDITOR_FLAG_##flag = (Editor_flags)(1ull<<EDITOR_FLAG_INDEX_##flag);
+EDITOR_FLAGS
+#undef X
+
+STATIC_ASSERT(EDITOR_FLAG_INDEX_MAX < 64, number_of_editor_flags_is_less_than_64);
+
 typedef enum Editor_tool {
   EDITOR_TOOL_INVALID = -1,
 #define X(tool) EDITOR_TOOL_##tool,
   EDITOR_TOOLS
 #undef X
-    EDITOR_TOOLS_MAX
+    EDITOR_TOOL_MAX
 } Editor_tool;
 
-char *Editor_tool_strings[EDITOR_TOOLS_MAX] = {
+char *Editor_tool_strings[EDITOR_TOOL_MAX] = {
 #define X(tool) #tool,
   EDITOR_TOOLS
 #undef X
@@ -460,6 +475,10 @@ DECL_SLICE_TYPE(Rectangle);
 DECL_SLICE_TYPE(u8);
 DECL_ARR_TYPE(Entity);
 DECL_SLICE_TYPE(Entity);
+DECL_ARR_TYPE(Entity_handle);
+DECL_SLICE_TYPE(Entity_handle);
+DECL_ARR_TYPE(s64);
+DECL_SLICE_TYPE(s64);
 
 
 /*
@@ -656,6 +675,7 @@ struct Entity {
   Entity_drop_proc drop_proc;
 
   Sprite  sprite;
+  Sprite  top_view_sprite;
   f32     sprite_scale;
   f32     sprite_rotation;
   Color   sprite_tint;
@@ -685,9 +705,14 @@ struct Map_data {
 
 // TODO level editor
 struct Editor {
-  Editor_tool tool;
+  Editor_flags flags;
   u8 *tiles;
-  Arr_Entity static_entities;
+  Arr_Entity_ptr static_entities;
+  //Arr_Entity_handle last_save_static_entity_handles;
+  Editor_tool tool;
+  Vector2 mouse_pos;
+  s64 tile;
+  Vector2 tile_midpoint;
 };
 
 struct Game {
@@ -842,14 +867,12 @@ Entity* spawn_player(Game *gp);
 Entity* spawn_health_pack(Game *gp);
 Entity* spawn_shotgun(Game *gp);
 Entity* spawn_assault_rifle(Game *gp);
-Entity* spawn_parent(Game *gp);
 
 void pickup_health_pack(Game *gp, Entity *a, Entity *b);
 
-void pickup_shotgun(Game *gp, Entity *a, Entity *b);
-void pickup_assault_rifle(Game *gp, Entity *a, Entity *b);
+void pickup_gun(Game *gp, Entity *a, Entity *b);
 
-void drop_weapon(Game *gp, Entity *weapon, Entity *wielder);
+void drop_gun(Game *gp, Entity *weapon, Entity *wielder);
 
 b32 check_circle_all_inside_rec(Vector2 center, float radius, Rectangle rec);
 
@@ -882,7 +905,7 @@ const s32 PLAYER_HEALTH = 10;
 const float PLAYER_BOUNDS_RADIUS = 10;
 const float PLAYER_SPRITE_Y_OFFSET = 14;
 const float PLAYER_SPRITE_SCALE = 1.0f;
-const float PLAYER_ACCEL = 1.2e4;
+const float PLAYER_ACCEL = 1.0e4;
 const float PLAYER_SLOW_FACTOR = 0.5f;
 const Color PLAYER_BOUNDS_COLOR = { 255, 0, 0, 255 };
 const float PLAYER_LOOK_RADIUS = 200.0f;
@@ -903,12 +926,10 @@ ENTITY_FLAG_DYNAMICS |
 
 const Entity_kind_mask PLAYER_BULLET_APPLY_COLLISION_MASK =
 ENTITY_KIND_MASK_RAPTOR |
-ENTITY_KIND_MASK_BOSS   |
 0;
 
 const Entity_kind_mask ENEMY_KIND_MASK =
 ENTITY_KIND_MASK_RAPTOR |
-ENTITY_KIND_MASK_BOSS   |
 ENTITY_KIND_MASK_PARENT |
 0;
 
@@ -1034,6 +1055,7 @@ Entity *entity_spawn(Game *gp) {
   }
 
   gp->entity_uid++;
+  if(gp->entity_uid == 0) gp->entity_uid = 1;
 
   *ep =
     (Entity){
@@ -1220,30 +1242,10 @@ Entity* spawn_player(Game *gp) {
   return ep;
 }
 
-Entity* spawn_parent(Game *gp) {
-  Entity *ep = entity_spawn(gp);
-
-  ep->kind = ENTITY_KIND_PARENT;
-
-  ep->flags =
-    ENTITY_FLAG_DYNAMICS |
-    ENTITY_FLAG_NOT_ON_SCREEN |
-    ENTITY_FLAG_DIE_IF_CHILD_LIST_EMPTY |
-    0;
-
-  ep->update_order = ENTITY_ORDER_FIRST;
-  ep->draw_order = ENTITY_ORDER_LAST;
-
-  ep->radius = 16.0f;
-  ep->bounds_color = GREEN;
-
-  return ep;
-}
-
 Entity* spawn_shotgun(Game *gp) {
   Entity *ep = entity_spawn(gp);
 
-  ep->kind = ENTITY_KIND_SHOTGUN;
+  ep->kind = ENTITY_KIND_GUN;
 
   ep->flags =
     ENTITY_FLAG_HAS_GUN |
@@ -1263,8 +1265,10 @@ Entity* spawn_shotgun(Game *gp) {
     ENTITY_KIND_MASK_PLAYER |
     0;
 
-  ep->interact_proc = pickup_shotgun;
-  ep->drop_proc     = drop_weapon;
+  ep->interact_proc = pickup_gun;
+  ep->drop_proc     = drop_gun;
+
+  ep->control = ENTITY_CONTROL_GUN_ON_GROUND;
 
   ep->gun.kind = GUN_KIND_SHOTGUN;
 
@@ -1272,6 +1276,7 @@ Entity* spawn_shotgun(Game *gp) {
 
   ep->bounds_color = GREEN;
   ep->sprite = SPRITE_SHOTGUN_SIDE;
+  ep->top_view_sprite = SPRITE_SHOTGUN_TOP;
   ep->sprite_scale = 1.0f;
   ep->sprite_tint = WHITE;
 
@@ -1284,7 +1289,7 @@ Entity* spawn_shotgun(Game *gp) {
 Entity* spawn_assault_rifle(Game *gp) {
   Entity *ep = entity_spawn(gp);
 
-  ep->kind = ENTITY_KIND_ASSAULT_RIFLE;
+  ep->kind = ENTITY_KIND_GUN;
 
   ep->flags =
     ENTITY_FLAG_HAS_GUN |
@@ -1304,8 +1309,8 @@ Entity* spawn_assault_rifle(Game *gp) {
     ENTITY_KIND_MASK_PLAYER |
     0;
 
-  ep->interact_proc = pickup_assault_rifle;
-  ep->drop_proc     = drop_weapon;
+  ep->interact_proc = pickup_gun;
+  ep->drop_proc     = drop_gun;
 
   ep->gun.kind = GUN_KIND_ASSAULT_RIFLE;
 
@@ -1313,6 +1318,7 @@ Entity* spawn_assault_rifle(Game *gp) {
 
   ep->bounds_color = GREEN;
   ep->sprite = SPRITE_ASSAULT_RIFLE_SIDE;
+  ep->top_view_sprite = SPRITE_ASSAULT_RIFLE_TOP;
   ep->sprite_scale = 1.0f;
   ep->sprite_tint = WHITE;
 
@@ -1362,11 +1368,12 @@ Entity* spawn_health_pack(Game *gp) {
   return ep;
 }
 
-void pickup_assault_rifle(Game *gp, Entity *a, Entity *b) {
-  ASSERT(a->kind == ENTITY_KIND_ASSAULT_RIFLE);
+void pickup_gun(Game *gp, Entity *a, Entity *b) {
+
+  ASSERT(a->kind == ENTITY_KIND_GUN);
   ASSERT(b->kind == ENTITY_KIND_PLAYER);
 
-  Entity *rifle = a;
+  Entity *gun = a;
   Entity *player = b;
 
   {
@@ -1378,53 +1385,21 @@ void pickup_assault_rifle(Game *gp, Entity *a, Entity *b) {
 
   }
 
-  rifle->flags ^=
+  gun->flags ^=
     ENTITY_FLAG_IS_INTERACTABLE |
     ENTITY_FLAG_MANUAL_SPRITE_ORIGIN |
     0;
 
-  rifle->parent_handle = handle_from_entity(player);
-  player->holding_gun_handle = handle_from_entity(rifle);
+  gun->parent_handle = handle_from_entity(player);
+  player->holding_gun_handle = handle_from_entity(gun);
 
-  rifle->sprite = SPRITE_ASSAULT_RIFLE_TOP;
-  ///rifle->sprite_offset = (Vector2){ .x = -0.5, };
-  rifle->control = ENTITY_CONTROL_GUN_BEING_HELD;
-  rifle->being_held_offset = (Vector2){ .x = -6, .y = 12 };
-
-}
-
-void pickup_shotgun(Game *gp, Entity *a, Entity *b) {
-
-  ASSERT(a->kind == ENTITY_KIND_SHOTGUN);
-  ASSERT(b->kind == ENTITY_KIND_PLAYER);
-
-  Entity *shotgun = a;
-  Entity *player = b;
-
-  {
-    Entity *holding = entity_from_handle(player->child_handle);
-
-    if(holding) {
-      holding->drop_proc(gp, holding, player);
-    }
-
-  }
-
-  shotgun->flags ^=
-    ENTITY_FLAG_IS_INTERACTABLE |
-    ENTITY_FLAG_MANUAL_SPRITE_ORIGIN |
-    0;
-
-  shotgun->parent_handle = handle_from_entity(player);
-  player->holding_gun_handle = handle_from_entity(shotgun);
-
-  shotgun->sprite = SPRITE_SHOTGUN_TOP;
-  shotgun->control = ENTITY_CONTROL_GUN_BEING_HELD;
-  shotgun->being_held_offset = (Vector2){ .x = -6, .y = 12 };
+  gun->sprite = gun->top_view_sprite;
+  gun->control = ENTITY_CONTROL_GUN_BEING_HELD;
+  gun->being_held_offset = (Vector2){ .x = -6, .y = 12 };
 
 }
 
-void drop_weapon(Game *gp, Entity *weapon, Entity *wielder) {
+void drop_gun(Game *gp, Entity *weapon, Entity *wielder) {
 
   weapon->flags |=
     ENTITY_FLAG_IS_INTERACTABLE |
@@ -1949,6 +1924,12 @@ void entity_shoot_gun(Game *gp, Entity *ep) {
       gun->cooldown_timer = 0;
     }
 
+    if(gun->flags & GUN_FLAG_JAMMED) {
+      // TODO jammed gun sound
+      // PlaySound(gp->jammed_sound);
+      goto shoot_end;
+    }
+
     ASSERT(gun->n_arms > 0);
     ASSERT(gun->n_bullets > 0);
 
@@ -2249,6 +2230,7 @@ Game* game_init(void) {
 
   gp->editor.tiles = push_array(gp->main_arena, u8, TILES_COUNT);
   arr_init_ex(gp->editor.static_entities, gp->main_arena, 64);
+  //arr_init_ex(gp->editor.last_save_static_entity_handles, gp->main_arena, 64);
 
   gp->tiles = push_array(gp->main_arena, u8, TILES_COUNT);
 
@@ -2362,11 +2344,38 @@ void game_level_end(Game *gp) {
 }
 
 void game_editor_save_and_close(Game *gp) {
-  memory_copy(gp->tiles, gp->editor.tiles, sizeof(u8) * TILES_COUNT);
+  Editor *editor = &gp->editor;
+
+  memory_copy(gp->tiles, editor->tiles, sizeof(u8) * TILES_COUNT);
 
   gp->cam.target = gp->player->pos;
   gp->cam.zoom = INITIAL_CAMERA_ZOOM;
   gp->debug_flags &= ~EDITOR_GAME_DEBUG_FLAGS_MASK;
+
+  //editor->static_entities.count = 0;
+  //for(int i = 0; i < gp->entities_allocated; i++) {
+  //  Entity *ep = &gp->entities[i];
+
+  //  if(ep->live) {
+  //    if(ep->flags & ENTITY_FLAG_PLACED_BY_EDITOR) {
+  //      arr_push(editor->static_entities, ep);
+  //    }
+  //  }
+
+  //}
+
+  // TODO serialize level data to code
+
+  //game_reset(gp);
+
+  //for(int i = 0; i < editor->static_entities.count; i++) {
+  //  Entity *ep = entity_spawn(gp);
+  //  Entity_handle handle = handle_from_entity(ep);
+  //  *ep = editor->static_entities.d[i];
+  //  ep->uid = handle.uid;
+  //  //arr_push(gp->last_save_static_entity_handles, handle);
+  //}
+
 }
 
 void game_editor_open(Game *gp) {
@@ -2826,9 +2835,6 @@ void game_update_and_draw(Game *gp) {
               GAME_FLAG_DRAW_IN_CAMERA |
               0;
 
-            spawn_shotgun(gp);
-            spawn_assault_rifle(gp);
-
           } else {
 
           }
@@ -2851,11 +2857,11 @@ void game_update_and_draw(Game *gp) {
         if(y > 0) {
           gp->editor.tool--;
           if(gp->editor.tool < 0) {
-            gp->editor.tool = EDITOR_TOOLS_MAX-1;
+            gp->editor.tool = EDITOR_TOOL_IGNORE-1;
           }
         } else if(y < 0) {
           gp->editor.tool++;
-          if(gp->editor.tool >= EDITOR_TOOLS_MAX) {
+          if(gp->editor.tool >= EDITOR_TOOL_IGNORE) {
             gp->editor.tool = 0;
           }
         }
@@ -2872,19 +2878,9 @@ void game_update_and_draw(Game *gp) {
         gp->cam.zoom = INITIAL_CAMERA_ZOOM;
       }
 
-      Vector2 p = GetMousePositionWorld2D(gp->cam);
-      s64 tile = tile_from_point(p);
-      //Vector2 tile_mid_point = Vector2AddValue(point_from_tile(tile), (float)TILE_SIZE*0.5f);
-
-      bool place_something = false;
-      bool delete_something = false;
-      //bool no_grid_snap = false;
-
-      if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-        place_something = true;
-      } else if(IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-        delete_something = true;
-      }
+      gp->editor.mouse_pos = GetMousePositionWorld2D(gp->cam);
+      gp->editor.tile = tile_from_point(gp->editor.mouse_pos);
+      gp->editor.tile_midpoint = Vector2AddValue(point_from_tile(gp->editor.tile), (float)TILE_SIZE*0.5f);
 
       if(IsMouseButtonDown(MOUSE_MIDDLE_BUTTON)) {
 
@@ -2894,86 +2890,137 @@ void game_update_and_draw(Game *gp) {
 
       }
 
-      if(place_something || delete_something) {
+      //if(IsKeyDown(KEY_LEFT_SHIFT)) {
+      //  gp->editor.flags |= EDITOR_FLAG_NO_GRID_SNAP;
+      //} else {
+      //  gp->editor.flags &= ~EDITOR_FLAG_NO_GRID_SNAP;
+      //}
 
-        //if(IsKeyDown(KEY_LEFT_SHIFT)) {
-        //  no_grid_snap = true;
-        //}
+      ASSERT(gp->editor.tool > EDITOR_TOOL_INVALID && gp->editor.tool < EDITOR_TOOL_MAX);
 
-        switch(gp->editor.tool) {
-          default:
-            UNREACHABLE;
-          case EDITOR_TOOL_PLACE_WALL:
-            {
-              if(place_something) {
+      switch(gp->editor.tool) {
+        default:
+          UNREACHABLE;
+        case EDITOR_TOOL_IGNORE:
+          gp->editor.tool = EDITOR_TOOL_IGNORE-1;
+          break;
+        case EDITOR_TOOL_WALL:
+          {
+            Editor *editor = &gp->editor;
 
-                ASSERT(tile >= 0 && tile <= TILES_COUNT);
-                gp->editor.tiles[tile] = TILE_KIND_WALL;
+            if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
 
-              } else {
+              ASSERT(editor->tile >= 0 && editor->tile <= TILES_COUNT);
+              editor->tiles[editor->tile] = TILE_KIND_WALL;
 
-                ASSERT(tile >= 0 && tile <= TILES_COUNT);
-                gp->editor.tiles[tile] = TILE_KIND_NONE;
+            } else if(IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
 
+              ASSERT(editor->tile >= 0 && editor->tile <= TILES_COUNT);
+              editor->tiles[editor->tile] = TILE_KIND_NONE;
+
+            }
+
+          } break;
+        case EDITOR_TOOL_FLOOR:
+          {
+            Editor *editor = &gp->editor;
+
+            if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+
+              ASSERT(editor->tile >= 0 && editor->tile <= TILES_COUNT);
+              editor->tiles[editor->tile] = TILE_KIND_FLOOR;
+
+            } else if(IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+
+              ASSERT(editor->tile >= 0 && editor->tile <= TILES_COUNT);
+              editor->tiles[editor->tile] = TILE_KIND_NONE;
+
+            }
+
+          } break;
+        case EDITOR_TOOL_DOOR:
+          {
+            Editor *editor = &gp->editor;
+
+            if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+
+              ASSERT(editor->tile >= 0 && editor->tile <= TILES_COUNT);
+              editor->tiles[editor->tile] = TILE_KIND_RED_DOOR;
+
+            } else if(IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+
+              ASSERT(editor->tile >= 0 && editor->tile <= TILES_COUNT);
+              editor->tiles[editor->tile] = TILE_KIND_NONE;
+
+            }
+
+          } break;
+        case EDITOR_TOOL_SHOTGUN_SPAWNER:
+          {
+            Editor *editor = &gp->editor;
+
+            if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+
+              Entity *ep = spawn_shotgun(gp);
+              ep->pos = editor->tile_midpoint;
+              ep->flags |= ENTITY_FLAG_PLACED_BY_EDITOR;
+              arr_push(editor->static_entities, ep);
+
+            }
+
+            if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+              Arr_Entity_ptr static_entities;
+              arr_init_ex(static_entities, gp->frame_arena, editor->static_entities.count);
+
+              for(int i = 0; i < editor->static_entities.count; i++) {
+                Entity *ep = editor->static_entities.d[i];
+                if(tile_from_point(ep->pos) == editor->tile) {
+                  entity_die(gp, ep);
+                } else {
+                  arr_push(static_entities, ep);
+                }
               }
-            } break;
-          case EDITOR_TOOL_PLACE_FLOOR:
-            {
-              if(place_something) {
 
-                ASSERT(tile >= 0 && tile <= TILES_COUNT);
-                gp->editor.tiles[tile] = TILE_KIND_FLOOR;
-
-              } else {
-
-                ASSERT(tile >= 0 && tile <= TILES_COUNT);
-                gp->editor.tiles[tile] = TILE_KIND_NONE;
-
+              editor->static_entities.count = 0;
+              for(int i = 0; i < static_entities.count; i++) {
+                arr_push(editor->static_entities, static_entities.d[i]);
               }
-            } break;
-          case EDITOR_TOOL_PLACE_DOOR:
-            {
-              if(place_something) {
+            }
 
-                ASSERT(tile >= 0 && tile <= TILES_COUNT);
-                gp->editor.tiles[tile] = TILE_KIND_RED_DOOR;
+          } break;
+        case EDITOR_TOOL_ASSAULT_RIFLE_SPAWNER:
+          {
+            Editor *editor = &gp->editor;
 
-              } else {
+            if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+              Entity *ep = spawn_assault_rifle(gp);
+              ep->pos = editor->tile_midpoint;
+              ep->flags |= ENTITY_FLAG_PLACED_BY_EDITOR;
+              arr_push(editor->static_entities, ep);
 
-                ASSERT(tile >= 0 && tile <= TILES_COUNT);
-                gp->editor.tiles[tile] = TILE_KIND_NONE;
+            }
 
+            if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+              Arr_Entity_ptr static_entities;
+              arr_init_ex(static_entities, gp->frame_arena, editor->static_entities.count);
+
+              for(int i = 0; i < editor->static_entities.count; i++) {
+                Entity *ep = editor->static_entities.d[i];
+                if(tile_from_point(ep->pos) == editor->tile) {
+                  entity_die(gp, ep);
+                } else {
+                  arr_push(static_entities, ep);
+                }
               }
-            } break;
-          case EDITOR_TOOL_PLACE_ENTITY_1:
-            {
-              //Vector2 dest = no_grid_snap ? p : tile_mid_point;
-              //if(place_something) {
-              //} else {
-              //}
-            } break;
-          case EDITOR_TOOL_PLACE_ENTITY_2:
-            {
-              //Vector2 dest = no_grid_snap ? p : tile_mid_point;
-              //if(place_something) {
-              //} else {
-              //}
-            } break;
-          case EDITOR_TOOL_PLACE_ENTITY_3:
-            {
-              //Vector2 dest = no_grid_snap ? p : tile_mid_point;
-              //if(place_something) {
-              //} else {
-              //}
-            } break;
-          case EDITOR_TOOL_PLACE_ENTITY_4:
-            {
-              //Vector2 dest = no_grid_snap ? p : tile_mid_point;
-              //if(place_something) {
-              //} else {
-              //}
-            } break;
-        }
+
+              editor->static_entities.count = 0;
+              for(int i = 0; i < static_entities.count; i++) {
+                arr_push(editor->static_entities, static_entities.d[i]);
+              }
+            }
+
+          } break;
+
       }
 
       goto update_end;
@@ -3153,6 +3200,18 @@ void game_update_and_draw(Game *gp) {
                 if(gp->debug_flags & GAME_DEBUG_FLAG_PLAYER_INVINCIBLE) {
                   ep->health = PLAYER_HEALTH;
                   ep->received_damage = 0;
+                }
+
+              } break;
+            case ENTITY_CONTROL_GUN_ON_GROUND:
+              {
+
+                b32 jammed = !!(GetRandomValue(0, 100) >= 30);
+
+                if(jammed) {
+                  ep->gun.flags |= GUN_FLAG_JAMMED;
+                } else {
+                  ep->gun.flags &= ~GUN_FLAG_JAMMED;
                 }
 
               } break;
@@ -3875,7 +3934,7 @@ update_end:;
         "player pos: { x = %.1f, y = %.1f }\n"
         "level: %i\n"
         "phase: %i\n"
-        "editor tool: %s\n"
+        "editor tool[%i]: %s\n"
         "game state: %s";
       stbsp_sprintf(debug_text,
           debug_text_fmt,
@@ -3895,6 +3954,7 @@ update_end:;
           gp->player ? gp->player->pos.y : 0,
           gp->level+1,
           gp->phase_index+1,
+          (int)(gp->editor.tool),
           Editor_tool_strings[gp->editor.tool],
           Game_state_strings[gp->state]);
       Vector2 debug_text_size = MeasureTextEx(gp->font, debug_text, 20, 1.0);
