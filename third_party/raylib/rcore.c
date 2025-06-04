@@ -3264,6 +3264,28 @@ int GetCharPressed(void)
     return value;
 }
 
+int PeekKeyPressed(void) {
+  int value = 0;
+
+  if(CORE.Input.Keyboard.keyPressedQueueCount > 0) {
+    // Get character from the queue head
+    value = CORE.Input.Keyboard.keyPressedQueue[0];
+  }
+
+  return value;
+}
+
+int PeekCharPressed(void) {
+  int value = 0;
+
+  if(CORE.Input.Keyboard.charPressedQueueCount > 0) {
+    // Get character from the queue head
+    value = CORE.Input.Keyboard.charPressedQueue[0];
+  }
+
+  return value;
+}
+
 // Set a custom key to exit program
 // NOTE: default exitKey is set to ESCAPE
 void SetExitKey(int key)

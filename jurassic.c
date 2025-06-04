@@ -134,7 +134,6 @@
   X(DAMAGE_INCREMENTS_SCORE)         \
   X(DIE_ON_APPLY_COLLISION)          \
   X(HAS_PARTICLE_EMITTER)            \
-  X(CHILDREN_ON_SCREEN)              \
   X(EMIT_SPAWN_PARTICLES)            \
   X(EMIT_DEATH_PARTICLES)            \
   X(APPLY_EFFECT_TINT)               \
@@ -145,8 +144,10 @@
   X(FOLLOW_PARENT)                    \
   X(GUN_BEING_HELD)                   \
   X(GUN_ON_GROUND)                    \
+  X(KEY_ON_GROUND)                    \
   X(COPY_PARENT)                      \
   X(GOTO_WAYPOINT)                    \
+  X(DOOR)                             \
 
 #define PARTICLE_EMITTERS        \
   X(SPARKS)                      \
@@ -178,11 +179,12 @@
   X(AUTOMATIC)                      \
   X(SPIN_WITH_SINE)                 \
 
-#define KEY_KINDS           \
+#define DOOR_COLORS         \
   X(RED)                    \
-  X(GREEN)                  \
   X(BLUE)                   \
   X(YELLOW)                 \
+
+#define KEY_COLORS DOOR_COLORS
 
 #define EDITOR_FLAGS        \
   X(NO_GRID_SNAP)           \
@@ -190,7 +192,12 @@
 #define EDITOR_TOOLS          \
   X(WALL)                     \
   X(FLOOR)                    \
-  X(DOOR)                     \
+  X(RED_DOOR)                 \
+  X(BLUE_DOOR)                \
+  X(YELLOW_DOOR)              \
+  X(RED_KEY)                  \
+  X(BLUE_KEY)                 \
+  X(YELLOW_KEY)               \
   X(SHOTGUN_SPAWNER)          \
   X(ASSAULT_RIFLE_SPAWNER)    \
   X(IGNORE)                   \
@@ -199,6 +206,8 @@
   X(WALL)                \
   X(FLOOR)               \
   X(RED_DOOR)            \
+  X(BLUE_DOOR)           \
+  X(YELLOW_DOOR)         \
 
 
 
@@ -207,6 +216,11 @@
  */
 
 #define entity_kind_in_mask(kind, mask) (!!((mask) & (1ull<<(kind))))
+#define door_color_in_mask(color, mask) (!!((mask) & (1u<<(color))))
+#define key_color_in_mask(color, mask)  door_color_in_mask((color), (mask))
+#define tile_from_door_tool(tool) ((Tile_kind)(tool - EDITOR_TOOL_RED_DOOR + TILE_KIND_RED_DOOR))
+#define color_from_door_tool(tool) ((Door_color)(tool - EDITOR_TOOL_RED_DOOR + DOOR_COLOR_RED))
+#define color_from_key_tool(tool) ((Key_color)(tool - EDITOR_TOOL_RED_KEY + KEY_COLOR_RED))
 
 
 /*
@@ -230,7 +244,8 @@ typedef u64 Gun_flags;
 typedef u64 Input_flags;
 typedef u64 Entity_flags;
 typedef u64 Entity_kind_mask;
-typedef u32 Key_kind_mask;
+typedef u32 Key_color_mask;
+typedef u32 Door_color_mask;
 typedef u32 Particle_flags;
 typedef struct Entity_handle Entity_handle;
 typedef struct Entity_node Entity_node;
@@ -399,25 +414,45 @@ STATIC_ASSERT(GUN_FLAG_INDEX_MAX < 64, number_of_bullet_emitter_flags_is_less_th
 GUN_FLAGS
 #undef X
 
-typedef enum Key_kind {
-  KEY_KIND_INVALID = -1,
-#define X(kind) KEY_KIND_##kind,
-  KEY_KINDS
+typedef enum Key_color {
+  KEY_COLOR_NONE = 0,
+#define X(kind) KEY_COLOR_##kind,
+  KEY_COLORS
 #undef X
-    KEY_KIND_MAX,
-} Key_kind;
+    KEY_COLOR_MAX,
+} Key_color;
 
-#define X(kind) const Key_kind_mask KEY_KIND_MASK_##kind = (Key_kind_mask)(1u<<KEY_KIND_##kind);
-KEY_KINDS
+#define X(kind) const Key_color_mask KEY_COLOR_MASK_##kind = (Key_color_mask)(1u<<KEY_COLOR_##kind);
+KEY_COLORS
 #undef X
 
-char *Key_kind_strings[KEY_KIND_MAX] = {
+char *Key_color_strings[KEY_COLOR_MAX] = {
 #define X(kind) #kind,
-  KEY_KINDS
+  KEY_COLORS
 #undef X
 };
 
-STATIC_ASSERT(KEY_KIND_MAX < 32, number_of_entity_kinds_is_less_than_32);
+STATIC_ASSERT(KEY_COLOR_MAX < 32, number_of_key_colors_is_less_than_32);
+
+typedef enum Door_color {
+  DOOR_COLOR_NONE = 0,
+#define X(kind) DOOR_COLOR_##kind,
+  DOOR_COLORS
+#undef X
+    DOOR_COLOR_MAX,
+} Door_color;
+
+#define X(kind) const Door_color_mask DOOR_COLOR_MASK_##kind = (Door_color_mask)(1u<<DOOR_COLOR_##kind);
+DOOR_COLORS
+#undef X
+
+char *Door_color_strings[DOOR_COLOR_MAX] = {
+#define X(kind) #kind,
+  DOOR_COLORS
+#undef X
+};
+
+STATIC_ASSERT(DOOR_COLOR_MAX < 32, number_of_door_colors_is_less_than_32);
 
 typedef enum Editor_flag_index {
   EDITOR_FLAG_INDEX_INVALID = -1,
@@ -667,7 +702,11 @@ struct Entity {
 
   Vector2 being_held_offset;
 
-  Key_kind key_kind;
+  Key_color key_color;
+  Door_color door_color;
+
+  s64 door_tiles[8];
+  s64 door_tiles_count;
 
   Entity_kind_mask apply_collision_mask;
   Entity_collide_proc collide_proc;
@@ -709,6 +748,7 @@ struct Editor {
   u8 *tiles;
   Arr_Entity_ptr static_entities;
   //Arr_Entity_handle last_save_static_entity_handles;
+  Arr_s64 selected_door_tiles;
   Editor_tool tool;
   Vector2 mouse_pos;
   s64 tile;
@@ -780,7 +820,9 @@ struct Game {
 
   s16 phase_index;
 
-  Key_kind_mask keys;
+  Key_color_mask keys;
+  Key_color  key_color;
+  Door_color door_color;
 
 #if 0
   struct {
@@ -867,10 +909,14 @@ Entity* spawn_player(Game *gp);
 Entity* spawn_health_pack(Game *gp);
 Entity* spawn_shotgun(Game *gp);
 Entity* spawn_assault_rifle(Game *gp);
+Entity* spawn_door(Game *gp);
+Entity* spawn_key(Game *gp);
 
 void pickup_health_pack(Game *gp, Entity *a, Entity *b);
 
 void pickup_gun(Game *gp, Entity *a, Entity *b);
+
+void pickup_key(Game *gp, Entity *a, Entity *b);
 
 void drop_gun(Game *gp, Entity *weapon, Entity *wielder);
 
@@ -891,6 +937,8 @@ b32 sprite_equals(Sprite a, Sprite b);
 s64 tile_from_point(Vector2 p);
 Vector2 point_from_tile(s64 tile);
 void row_col_from_tile(s64 tile, s64 *row, s64 *col);
+
+s64 tile_distance(s64 a, s64 b);
 
 
 /*
@@ -1312,6 +1360,8 @@ Entity* spawn_assault_rifle(Game *gp) {
   ep->interact_proc = pickup_gun;
   ep->drop_proc     = drop_gun;
 
+  ep->control = ENTITY_CONTROL_GUN_ON_GROUND;
+
   ep->gun.kind = GUN_KIND_ASSAULT_RIFLE;
 
   ep->death_particle_emitter = PARTICLE_EMITTER_WEAPON_DIE_PUFF;
@@ -1366,6 +1416,105 @@ Entity* spawn_health_pack(Game *gp) {
   ep->radius = 40;
 
   return ep;
+}
+
+Entity* spawn_door(Game *gp) {
+  Editor *editor = &gp->editor;
+
+  ASSERT(gp->door_color != DOOR_COLOR_NONE);
+  Door_color door_color = gp->door_color;
+  gp->door_color = DOOR_COLOR_NONE;
+
+  Entity *ep = entity_spawn(gp);
+
+  ep->kind = ENTITY_KIND_DOOR;
+  ep->door_color = door_color;
+
+  ep->pos = Vector2AddValue(point_from_tile(arr_last(editor->selected_door_tiles)), (float)TILE_SIZE*0.5f);
+
+  ep->door_tiles_count = editor->selected_door_tiles.count;
+  for(int i = 0; i < editor->selected_door_tiles.count; i++) {
+    ep->door_tiles[i] = editor->selected_door_tiles.d[i];
+  }
+
+  editor->selected_door_tiles.count = 0;
+
+  ep->control = ENTITY_CONTROL_DOOR;
+  ep->update_order = ENTITY_ORDER_LAST;
+  ep->draw_order = ENTITY_ORDER_LAST;
+
+  ep->bounds_color = YELLOW;
+  ep->radius = 20;
+  //ep->interact_radius = 20;
+
+  return ep;
+}
+
+Entity* spawn_key(Game *gp) {
+  ASSERT(gp->key_color != KEY_COLOR_NONE);
+
+  Key_color key_color = gp->key_color;
+  gp->key_color = KEY_COLOR_NONE;
+
+  Entity *ep = entity_spawn(gp);
+
+  ep->key_color = key_color;
+
+  ep->kind = ENTITY_KIND_KEY;
+
+  ep->flags =
+    ENTITY_FLAG_HAS_GUN |
+    ENTITY_FLAG_APPLY_COLLISION |
+    ENTITY_FLAG_IS_INTERACTABLE |
+    ENTITY_FLAG_HAS_SPRITE |
+    0;
+
+  ep->update_order = ENTITY_ORDER_LAST;
+  ep->draw_order = ENTITY_ORDER_FIRST;
+
+  // nocheckin
+  ep->pos = (Vector2){ .x = 500, . y = 900 }; 
+
+  ep->apply_collision_mask =
+    ENTITY_KIND_MASK_PLAYER |
+    0;
+
+  ep->interact_proc = pickup_key;
+
+  ep->bounds_color = GREEN;
+  switch(key_color) {
+    case KEY_COLOR_RED:
+      ep->sprite = SPRITE_RED_KEY;
+      break;
+    case KEY_COLOR_BLUE:
+      ep->sprite = SPRITE_BLUE_KEY;
+      break;
+    case KEY_COLOR_YELLOW:
+      ep->sprite = SPRITE_YELLOW_KEY;
+      break;
+  }
+  ep->sprite_scale = 1.0f;
+  ep->sprite_tint = WHITE;
+
+  ep->interact_radius = WEAPON_INTERACT_RADIUS;
+  ep->radius = WEAPON_RADIUS;
+
+  return ep;
+}
+
+void pickup_key(Game *gp, Entity *a, Entity *b) {
+
+  ASSERT(a->kind == ENTITY_KIND_KEY);
+  ASSERT(b->kind == ENTITY_KIND_PLAYER);
+
+  Entity *key = a;
+
+  ASSERT(key->key_color != KEY_COLOR_NONE);
+
+  gp->keys |= 1u<<key->key_color;
+
+  key->flags |= ENTITY_FLAG_DIE_NOW;
+
 }
 
 void pickup_gun(Game *gp, Entity *a, Entity *b) {
@@ -2231,6 +2380,7 @@ Game* game_init(void) {
   gp->editor.tiles = push_array(gp->main_arena, u8, TILES_COUNT);
   arr_init_ex(gp->editor.static_entities, gp->main_arena, 64);
   //arr_init_ex(gp->editor.last_save_static_entity_handles, gp->main_arena, 64);
+  arr_init_ex(gp->editor.selected_door_tiles, gp->main_arena, 8);
 
   gp->tiles = push_array(gp->main_arena, u8, TILES_COUNT);
 
@@ -2327,6 +2477,8 @@ void game_reset(Game *gp) {
   gp->level = 0;
 
   gp->score = 0;
+
+  gp->keys = 0;
 
   //SeekMusicStream(gp->music, 0);
 
@@ -2491,6 +2643,20 @@ Collision_manifold tile_segment_intersect(Vector2 p1, Vector2 p2, Vector2 p3, Ve
   return result;
 }
 
+force_inline s64 tile_distance(s64 a, s64 b) {
+  s64 a_row = 0;
+  s64 a_col = 0;
+  s64 b_row = 0;
+  s64 b_col = 0;
+
+  row_col_from_tile(a, &a_row, &a_col);
+  row_col_from_tile(b, &b_row, &b_col);
+
+  s64 dist = (s64)sqrtf(SQUARE(a_row - b_row) + SQUARE(a_col - b_col));
+
+  return dist;
+}
+
 void game_main_loop(Game *gp) {
   /*
    * NOTE gameplay ideas
@@ -2634,7 +2800,7 @@ void game_update_and_draw(Game *gp) {
 
 #endif
 
-    int key = GetCharPressed();
+    int key = PeekCharPressed();
     gp->key_pressed = key;
     gp->character_pressed = key;
     if(key != 0) {
@@ -2898,7 +3064,8 @@ void game_update_and_draw(Game *gp) {
 
       ASSERT(gp->editor.tool > EDITOR_TOOL_INVALID && gp->editor.tool < EDITOR_TOOL_MAX);
 
-      switch(gp->editor.tool) {
+      Editor_tool tool = gp->editor.tool;
+      switch(tool) {
         default:
           UNREACHABLE;
         case EDITOR_TOOL_IGNORE:
@@ -2938,20 +3105,85 @@ void game_update_and_draw(Game *gp) {
             }
 
           } break;
-        case EDITOR_TOOL_DOOR:
+        case EDITOR_TOOL_RED_DOOR:
+        case EDITOR_TOOL_BLUE_DOOR:
+        case EDITOR_TOOL_YELLOW_DOOR:
           {
             Editor *editor = &gp->editor;
 
             if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
 
-              ASSERT(editor->tile >= 0 && editor->tile <= TILES_COUNT);
-              editor->tiles[editor->tile] = TILE_KIND_RED_DOOR;
+              if(IsKeyDown(KEY_LEFT_SHIFT)) {
+
+                bool skip = false;
+                for(int i = 0; i < editor->selected_door_tiles.count; i++) {
+                  if(editor->selected_door_tiles.d[i] == editor->tile) {
+                    skip = true;
+                    break;
+                  }
+                }
+
+                if(!skip) {
+                  arr_push(editor->selected_door_tiles, editor->tile);
+                }
+
+              } else {
+
+                ASSERT(editor->tile >= 0 && editor->tile <= TILES_COUNT);
+                editor->tiles[editor->tile] = tile_from_door_tool(tool);
+
+              }
 
             } else if(IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
 
               ASSERT(editor->tile >= 0 && editor->tile <= TILES_COUNT);
               editor->tiles[editor->tile] = TILE_KIND_NONE;
 
+            }
+
+            if(IsKeyPressed(KEY_ENTER)) {
+
+              gp->door_color = color_from_door_tool(tool);
+
+              Entity *ep = spawn_door(gp);
+              ep->flags |= ENTITY_FLAG_PLACED_BY_EDITOR;
+              arr_push(editor->static_entities, ep);
+
+            }
+
+          } break;
+        case EDITOR_TOOL_RED_KEY:
+        case EDITOR_TOOL_BLUE_KEY:
+        case EDITOR_TOOL_YELLOW_KEY:
+          {
+            Editor *editor = &gp->editor;
+
+            if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+
+              gp->key_color = color_from_key_tool(tool);
+
+              Entity *ep = spawn_key(gp);
+              ep->pos = editor->tile_midpoint;
+              ep->flags |= ENTITY_FLAG_PLACED_BY_EDITOR;
+              arr_push(editor->static_entities, ep);
+
+            } else if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+              Arr_Entity_ptr static_entities;
+              arr_init_ex(static_entities, gp->frame_arena, editor->static_entities.count);
+
+              for(int i = 0; i < editor->static_entities.count; i++) {
+                Entity *ep = editor->static_entities.d[i];
+                if(tile_from_point(ep->pos) == editor->tile) {
+                  entity_die(gp, ep);
+                } else {
+                  arr_push(static_entities, ep);
+                }
+              }
+
+              editor->static_entities.count = 0;
+              for(int i = 0; i < static_entities.count; i++) {
+                arr_push(editor->static_entities, static_entities.d[i]);
+              }
             }
 
           } break;
@@ -2966,9 +3198,7 @@ void game_update_and_draw(Game *gp) {
               ep->flags |= ENTITY_FLAG_PLACED_BY_EDITOR;
               arr_push(editor->static_entities, ep);
 
-            }
-
-            if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            } else if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
               Arr_Entity_ptr static_entities;
               arr_init_ex(static_entities, gp->frame_arena, editor->static_entities.count);
 
@@ -2998,9 +3228,7 @@ void game_update_and_draw(Game *gp) {
               ep->flags |= ENTITY_FLAG_PLACED_BY_EDITOR;
               arr_push(editor->static_entities, ep);
 
-            }
-
-            if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            } else if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
               Arr_Entity_ptr static_entities;
               arr_init_ex(static_entities, gp->frame_arena, editor->static_entities.count);
 
@@ -3227,6 +3455,34 @@ void game_update_and_draw(Game *gp) {
                 ep->manual_sprite_origin = parent->pos;
                 Vector2 offset = Vector2Rotate(ep->being_held_offset, angle);
                 ep->pos = Vector2Add(parent->pos, offset);
+
+              } break;
+            case ENTITY_CONTROL_DOOR:
+              {
+                if(gp->player) {
+                  Door_color door_color = ep->door_color;
+
+                  bool open_door = false;
+                  for(int i = 0; i < ep->door_tiles_count; i++) {
+                    if(tile_distance(ep->door_tiles[i], tile_from_point(gp->player->pos)) <= 2) {
+                      if(gp->input_flags & INPUT_FLAG_INTERACT) {
+                        if(door_color_in_mask(door_color, gp->keys)) {
+                          open_door = true;
+                          break;
+                        }
+                      }
+                    }
+                  }
+
+                  if(open_door) {
+                    for(int i = 0; i < ep->door_tiles_count; i++) {
+                      gp->tiles[ep->door_tiles[i]] = TILE_KIND_FLOOR;
+                    }
+
+                    ep->flags |= ENTITY_FLAG_DIE_NOW;
+                  }
+
+                }
 
               } break;
             case ENTITY_CONTROL_COPY_PARENT:
